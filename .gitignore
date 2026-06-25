@@ -1,0 +1,37 @@
+# SAM3 library (install separately: pip install git+https://github.com/facebookresearch/sam3)
+sam3/
+sam3.egg-info/
+
+# model weights & exports
+*.pt
+*.onnx
+*.trt
+*.engine
+*.plan
+
+# videos & images
+*.mp4
+*.avi
+*.mkv
+*.jpg
+*.jpeg
+*.png
+# user data
+exemplar/
+*record*
+
+# python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.txt
+*CLAUDE*
