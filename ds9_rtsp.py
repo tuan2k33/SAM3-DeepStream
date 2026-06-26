@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-4-cam live visualization → vis4cam.mp4 (H.264).
-nvinfer interval=4; nvtracker propagates bboxes to all frames; nvdsosd draws.
+Multi-camera DeepStream 9 RTSP pipeline → annotated mp4.
+
+Reads all settings from config.txt (or $DS_CONFIG override).
+Called directly for live RTSP cameras, or via ds9_video.py for local video files.
+
+Usage:
+    CUDA_VISIBLE_DEVICES=1 python3 ds9_rtsp.py          # live cameras (config.txt)
+    CUDA_VISIBLE_DEVICES=1 python3 ds9_video.py <file>  # local video (config_video.txt)
 """
 
 import configparser
@@ -16,7 +22,7 @@ from pyservicemaker import Pipeline, BatchMetadataOperator, Probe
 _HERE = Path(__file__).parent          
 
 _cfg = configparser.ConfigParser()
-_cfg.read(_HERE / "config.txt")
+_cfg.read(os.environ.get("DS_CONFIG", str(_HERE / "config.txt")))
 
 SOURCES      = [s.strip() for s in _cfg.get("sources", "urls").strip().splitlines() if s.strip()]
 SOURCE_NAMES = [f"cam{i}" for i in range(len(SOURCES))]
@@ -62,7 +68,22 @@ class DetectionLogger(BatchMetadataOperator):
                 except Exception:
                     pass
             if n_det:
-                print(f"  cam{cam} #{frame_meta.frame_number}: {n_det} det",
+                cls_conf: dict[str, list[float]] = {}
+                for obj in frame_meta.object_items:
+                    try:
+                        cls  = int(obj.class_id)
+                        name = CLASSES[cls] if cls < len(CLASSES) else str(cls)
+                        key  = (cam, getattr(obj, "tracking_id",
+                                getattr(obj, "object_id", None)))
+                        conf = self._score_cache.get(key, 0.0)
+                        cls_conf.setdefault(name, []).append(conf)
+                    except Exception:
+                        pass
+                parts = [
+                    f"{name}×{len(cs)} avg={sum(cs)/len(cs):.2f} max={max(cs):.2f}"
+                    for name, cs in cls_conf.items()
+                ]
+                print(f"  cam{cam} #{frame_meta.frame_number}: {' | '.join(parts)}",
                       flush=True)
 
 

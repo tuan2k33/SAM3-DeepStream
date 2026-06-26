@@ -23,4 +23,4 @@ fi
 
 # Step 2: run pipeline
 echo "[run] Starting pipeline..."
-CUDA_VISIBLE_DEVICES=1 python3 ds_vis_psm.py
+CUDA_VISIBLE_DEVICES=1 python3 ds9_rtsp.py

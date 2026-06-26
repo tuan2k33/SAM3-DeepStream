@@ -29,9 +29,13 @@ dist/
 build/
 .eggs/
 
+# mediamtx binary (auto-downloaded)
+.mediamtx/
+
 # IDE
 .vscode/
 .idea/
 *.swp
 *.txt
 *CLAUDE*
+!requirements.txt

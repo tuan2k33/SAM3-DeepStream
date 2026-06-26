@@ -350,7 +350,7 @@ def generate_ds_config(classes, engine_path, Q=200, with_mask=False, Hm=288, Wm=
 
     lib_path    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "libnvdsinfer_sam3.so")
     class_attrs = "\n".join(
-        f"[class-attrs-{i}]\npre-cluster-threshold=0.5" for i in range(nc)
+        f"[class-attrs-{i}]\npre-cluster-threshold=0.3" for i in range(nc)
     )
 
     if with_mask:

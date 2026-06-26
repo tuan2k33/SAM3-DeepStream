@@ -2,7 +2,7 @@
 
 Real-time open-vocabulary detection and instance segmentation on multi-camera RTSP streams using [SAM3](https://github.com/facebookresearch/sam3) and NVIDIA DeepStream 9.
 
-**Workflow:** define classes in `config.txt` → `run.sh` exports a TRT FP16 engine (once) → runs a DeepStream pipeline → saves annotated mp4.
+**Workflow:** define classes in a config file → `run.sh` exports a TRT FP16 engine (once) → runs a DeepStream pipeline → saves annotated mp4.
 
 ---
 
@@ -15,9 +15,9 @@ Real-time open-vocabulary detection and instance segmentation on multi-camera RT
 
 ---
 
-## Quick start
+## Quick start — live RTSP cameras
 
-### 1. Configure `config.txt`
+### 1. Write `config.txt`
 
 ```ini
 [sources]
@@ -26,7 +26,7 @@ urls =
     rtsp://user:pass@192.168.1.11:554
 
 [model]
-classes = person, car
+classes = adult, child, phone
 mask_mode = 1
 
 [pipeline]
@@ -38,7 +38,7 @@ run_seconds = 60
 
 | Field | Description |
 |-------|-------------|
-| `urls` | RTSP sources, one per line |
+| `urls` | RTSP sources, one per line (any number) |
 | `classes` | Comma-separated class names to detect |
 | `mask_mode` | `0` = detection only · `1` = detection + instance mask |
 | `width` / `height` | Pipeline resolution (all sources scaled to this) |
@@ -46,22 +46,59 @@ run_seconds = 60
 | `run_seconds` | Stop after N seconds; `0` or omit = run until Ctrl+C |
 | `output_file` | Output path; omit = auto-named `output/vis_{mode}_{classes}_{timestamp}.mp4` |
 
+> `config.txt` contains RTSP credentials — it is in `.gitignore` and never committed.
+
 ### 2. Run
 
 ```bash
 ./run.sh
 ```
 
-`run.sh` will:
-1. Read `classes` and `mask_mode` from `config.txt`
-2. Export engine → `sam3_{mode}_{classes}/sam3.engine` (skipped if already exists)
-3. Start the DeepStream pipeline → save to `output/`
+`run.sh` reads `config.txt`, exports the engine if needed, then starts the pipeline.
 
-To force re-export (e.g. after changing classes):
+To force re-export after changing classes:
 ```bash
-rm -rf sam3_1_person_car/
+rm -rf sam3_1_adult_child_phone/
 ./run.sh
 ```
+
+---
+
+## Quick start — local video file
+
+### 1. Write `config_video.txt`
+
+```ini
+[model]
+classes = adult, child, phone
+mask_mode = 1
+
+[pipeline]
+width = 1920
+height = 1080
+infer_interval = 4
+```
+
+No `[sources]` needed — the video file is the source.
+No `run_seconds` needed — duration is read from the video automatically.
+`output_file` is auto-named from the video filename if omitted.
+
+`config_video.txt` is committed to the repo (no credentials).
+
+### 2. Run
+
+```bash
+CUDA_VISIBLE_DEVICES=1 python3 ds9_video.py video_test/my_video.mp4
+```
+
+Internally this:
+1. Downloads `mediamtx` once to `.mediamtx/` (single binary, ~30 MB)
+2. Starts a local RTSP server at `rtsp://localhost:8554/live`
+3. Loops the video via `ffmpeg` into that server
+4. Runs `ds9_rtsp.py` pointed at `localhost:8554/live`
+5. Saves output to `output/vis_{mode}_{classes}_{video_stem}.mp4`
+
+Make sure the engine exists first — run `./run.sh` or `specialize.py` once with the same classes/mask_mode as in `config_video.txt`.
 
 ---
 
@@ -71,16 +108,16 @@ rm -rf sam3_1_person_car/
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 python3 specialize.py \
-    --classes person car --mask 1 --device cuda
-# → sam3_1_person_car/sam3.onnx + sam3.engine + config_infer.txt + labels.txt
+    --classes adult child phone --mask 1 --device cuda
+# → sam3_1_adult_child_phone/sam3.onnx + sam3.engine + config_infer.txt + labels.txt
 ```
 
 Add `--skip-trt` to stop after ONNX export.
 
-### Run pipeline only
+### Run RTSP pipeline only
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 python3 ds_vis_psm.py
+CUDA_VISIBLE_DEVICES=1 python3 ds9_rtsp.py
 ```
 
 ### Recompile C++ parser (after editing `nvdsparsebbox_sam3.cpp`)
@@ -103,15 +140,16 @@ specialize.py  (run once per class set)
     └─ mask head output: 36×36 fp16 per object  (mask_mode=1)
   → sam3_{mode}_{classes}/sam3.engine  (TRT FP16)
 
-ds_vis_psm.py  (runtime)
+ds9_rtsp.py  (runtime — live cameras or via ds9_video.py)
   N× nvurisrcbin (RTSP)
     → nvstreammux → nvinfer (SAM3 engine, interval=4)
         → nvtracker (NvDCF, propagates boxes to skipped frames)
             → nvmultistreamtiler → nvdsosd (boxes + masks)
                 → nvh264enc → mp4mux → output/
-```
 
-The vision encoder runs **once per batch** regardless of class count.
+ds9_video.py  (video file wrapper)
+  ffmpeg loop → mediamtx (localhost:8554) → ds9_rtsp.py
+```
 
 ---
 
@@ -119,16 +157,17 @@ The vision encoder runs **once per batch** regardless of class count.
 
 ```
 sam3-deploy/
-├── run.sh                    # one-shot: config → engine → pipeline
+├── run.sh                    # one-shot: config.txt → engine → pipeline
 ├── specialize.py             # export SAM3 → ONNX → TRT engine
-├── ds_vis_psm.py             # multi-cam DeepStream pipeline
-├── ds_video_infer.py         # single video inference (Gst direct)
+├── ds9_rtsp.py               # multi-cam DeepStream RTSP pipeline
+├── ds9_video.py              # restream local video → run ds9_rtsp.py
 ├── nvdsparsebbox_sam3.cpp    # DeepStream custom bbox/mask parser
 ├── libnvdsinfer_sam3.so      # compiled parser
-├── config.txt                # sources, classes, pipeline settings
-├── weights/                  # sam3.pt, sam3.1_multiplex.pt
-├── exemplar/                 # exemplar crops (adult/child/phone)
-├── sam3_{mode}_{classes}/    # generated: onnx + engine + config
+├── config_video.txt          # model/pipeline settings for video inference
+├── config.txt                # sources + settings for live cameras
+├── weights/                  # sam3.pt
+├── sam3_{mode}_{classes}/    # generated: onnx + engine + config_infer.txt
+├── .mediamtx/                # auto-downloaded mediamtx binary
 └── output/                   # annotated mp4 outputs
 ```
 
@@ -137,9 +176,8 @@ sam3-deploy/
 ## Notes
 
 - `imgsz=1008` is the only validated resolution for the SAM3 ViT backbone.
-- All `gpu-id` properties in DeepStream must be `0`; use `CUDA_VISIBLE_DEVICES=N` to select physical GPU.
+- All `gpu-id` properties in DeepStream must be `0`; use `CUDA_VISIBLE_DEVICES=N` to select the physical GPU.
 - SAM3.1 (`weights/sam3.1_multiplex.pt`) uses a different architecture and is not yet supported by `specialize.py`.
-- `config.txt` contains RTSP credentials — add it to `.gitignore` before pushing.
 
 ---
 
