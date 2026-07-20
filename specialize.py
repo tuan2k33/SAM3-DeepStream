@@ -175,11 +175,12 @@ class _Decoder(nn.Module):
             all_logits[-1],                         # [B, Q]     logits (pre-sigmoid)
             dec.intermediate_hidden_states[-1],     # [B, Q, D]  for mask coefficients
             enc.last_hidden_state,                  # [B, Hp*Wp+text, D] for prototypes
+            dec.presence_logits[-1],                # [B, 1]  scene-level presence (last layer)
         )
 
     def forward(self, fpn_feat_2, fpn_pos_2, text_features, text_mask):
-        boxes, logits, _, _ = self._decode(fpn_feat_2, fpn_pos_2, text_features, text_mask)
-        return boxes, logits
+        boxes, logits, _, _, presence = self._decode(fpn_feat_2, fpn_pos_2, text_features, text_mask)
+        return boxes, logits, presence
 
 
 class _DecoderFull(_Decoder):
@@ -260,7 +261,7 @@ class Sam3Wrapper(nn.Module):
             text_mask = getattr(self, f"text_mask_{i}").expand(B, -1)
 
             if self.with_mask:
-                pred_boxes, pred_logits, dec_queries, enc_hidden = self.decoder(
+                pred_boxes, pred_logits, dec_queries, enc_hidden, presence = self.decoder(
                     fpn2, fpn_pos, text_feat, text_mask
                 )
                 protos = self._prototypes(fpn0, fpn1, enc_hidden)
@@ -269,10 +270,16 @@ class Sam3Wrapper(nn.Module):
                 masks  = F.interpolate(masks, (36, 36), mode="bilinear", align_corners=False).half()
                 mask_chunks.append(masks)
             else:
-                pred_boxes, pred_logits = self.decoder(fpn2, fpn_pos, text_feat, text_mask)
+                pred_boxes, pred_logits, presence = self.decoder(fpn2, fpn_pos, text_feat, text_mask)
 
             boxes_px = pred_boxes * self.scale
-            scores   = pred_logits.sigmoid().unsqueeze(-1)
+            # SAM3's final detection score is the per-query score gated by a
+            # scene-level presence token (HF transformers documents:
+            #   final_scores = pred_logits.sigmoid() * presence_logits.sigmoid()).
+            # Without the presence gate, concepts that are ABSENT from the scene
+            # (e.g. "human face" on a vehicle windshield) are not suppressed and
+            # leak as high-confidence false positives.
+            scores   = (pred_logits.sigmoid() * presence.sigmoid()).unsqueeze(-1)
             cls_id   = torch.full(
                 (B, pred_boxes.shape[1], 1), float(i),
                 dtype=pred_boxes.dtype, device=pred_boxes.device,
