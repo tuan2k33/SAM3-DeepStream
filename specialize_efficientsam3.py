@@ -155,7 +155,7 @@ class EfficientSam3Wrapper(nn.Module):
             det_chunks.append(torch.cat([boxes, scores.unsqueeze(-1), cls_col], dim=-1))
 
             if self.with_mask:
-                m = interpolate(outputs['pred_masks'], (IMGSZ, IMGSZ),
+                m = interpolate(outputs['pred_masks'], pixel_values.shape[-2:],
                                  mode='bilinear', align_corners=False).sigmoid()
                 mask_chunks.append(m)
 

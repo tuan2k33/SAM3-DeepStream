@@ -19,7 +19,7 @@ def build(onnx_path, engine_path, imgsz, min_batch, opt_batch, max_batch,
     logger = trt.Logger(trt.Logger.WARNING)
     trt.init_libnvinfer_plugins(logger, '')
     builder = trt.Builder(logger)
-    network = builder.create_network()
+    network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
     parser = trt.OnnxParser(network, logger)
 
     print(f'[Parse] {onnx_path} ...')
