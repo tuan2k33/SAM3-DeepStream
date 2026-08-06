@@ -27,7 +27,6 @@ import sys
 import os
 import time
 import argparse
-import subprocess
 import urllib.request
 
 EFFICIENTSAM3_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'efficientsam3')
@@ -41,29 +40,7 @@ from sam3.model.data_misc import FindStage, interpolate
 from sam3.model import box_ops
 
 from specialize import generate_ds_config
-
-
-def run_trtexec_fp32(onnx_path, engine_path, imgsz, min_batch, opt_batch, max_batch):
-    """FP32 build (no --fp16) -- unlike specialize.py's SAM3 pipeline, EfficientSAM3's
-    geometry_encoder attention stack overflows under FP16 (confirmed via layer-by-layer
-    NaN probing: LayerNormalization inside geometry_encoder.encode produces NaN even
-    with the offending self-attention masking bug fixed and with per-layer FP32
-    precision overrides via the TensorRT builder API -- root cause not fully isolated).
-    FP32 is ~5x slower (~110ms vs ~13ms/frame on RTX 5070 Laptop) but verified correct."""
-    cmd = [
-        'trtexec',
-        f'--onnx={onnx_path}',
-        f'--saveEngine={engine_path}',
-        f'--minShapes=pixel_values:{min_batch}x3x{imgsz}x{imgsz}',
-        f'--optShapes=pixel_values:{opt_batch}x3x{imgsz}x{imgsz}',
-        f'--maxShapes=pixel_values:{max_batch}x3x{imgsz}x{imgsz}',
-    ]
-    print(f'\n[TRT] {" ".join(cmd)}\n')
-    t0 = time.perf_counter()
-    r = subprocess.run(cmd)
-    if r.returncode != 0:
-        raise RuntimeError(f'trtexec failed (exit {r.returncode})')
-    print(f'\n[TRT] Saved: {engine_path}  ({(time.perf_counter() - t0) / 60:.1f} min)')
+from build_mixed_precision_engine import build as build_mixed_precision_engine
 
 CHECKPOINT_URL = ('https://huggingface.co/Simon7108528/EfficientSAM3/resolve/main/'
                    'efficientsam3_ft/efficientsam3_efficientvit.pt')
@@ -241,7 +218,7 @@ def specialize_and_export(
 
     engine_path = output_path.replace('.onnx', '.engine')
     if not skip_trt:
-        run_trtexec_fp32(output_path, engine_path, imgsz, min_batch, opt_batch, max_batch)
+        build_mixed_precision_engine(output_path, engine_path, imgsz, min_batch, opt_batch, max_batch)
 
     generate_ds_config(classes, engine_path, Q=Q, with_mask=with_mask, Hm=Hm, Wm=Wm)
 
