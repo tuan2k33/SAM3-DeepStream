@@ -16,7 +16,9 @@ Real-time open-vocabulary detection and instance segmentation on multi-camera RT
 
 ## Updates
 
-### 2026-08-10
+<details open>
+<summary><strong>2026-08-10</strong></summary>
+
 - WxH other than 1008x1008 works now with conditions: W and H must be equal and must be 14-multiple. Smaller input size leads to less accurate bounding boxes (see /test).
 
   | imgsz | latency | qps | quality |
@@ -27,17 +29,35 @@ Real-time open-vocabulary detection and instance segmentation on multi-camera RT
   | 350   | 41ms    | 24.0| clean |
   | 280   | 19ms    | 51.4| bad boxes |
 
-### 2026-08-06
+</details>
+
+<details>
+<summary><strong>2026-08-06</strong></summary>
+
 - EfficientSAM3 works now.
 
-### 2026-07-20
+</details>
+
+<details>
+<summary><strong>2026-07-20</strong></summary>
+
 - Fixed detection score calculation: SAM3's final per-query score must be gated by the scene-level presence token (matching the HF `transformers` reference implementation).
 
-### 2026-06-26
+</details>
+
+<details>
+<summary><strong>2026-06-26</strong></summary>
+
 - Dynamic batch works now.
 
-### 2026-06-25
+</details>
+
+<details>
+<summary><strong>2026-06-25</strong></summary>
+
 - Initial commit and first update to the repo.
+
+</details>
 
 ## Notes
 
