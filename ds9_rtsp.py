@@ -27,14 +27,15 @@ _cfg.read(os.environ.get("DS_CONFIG", str(_HERE / "config.txt")))
 SOURCES      = [s.strip() for s in _cfg.get("sources", "urls").strip().splitlines() if s.strip()]
 SOURCE_NAMES = [f"cam{i}" for i in range(len(SOURCES))]
 CLASSES      = [c.strip() for c in _cfg.get("model", "classes").split(",")]
-MASK_MODE    = _cfg.getint("model", "mask_mode")
-INFER_CONFIG = str(_HERE / f"sam3_{MASK_MODE}_{'_'.join(CLASSES)}" / "config_infer.txt")
+MODE         = _cfg.get("model", "mode", fallback="seg")
+IMGSZ        = _cfg.getint("model", "imgsz", fallback=1008)
+INFER_CONFIG = str(_HERE / f"sam3_{IMGSZ}_{MODE}_{'_'.join(CLASSES)}" / "config_infer.txt")
 WIDTH          = _cfg.getint("pipeline", "width",  fallback=1920)
 HEIGHT         = _cfg.getint("pipeline", "height", fallback=1080)
 INFER_INTERVAL = _cfg.getint("pipeline", "infer_interval")
 RUN_SECONDS  = _cfg.getint("pipeline", "run_seconds", fallback=0)  # 0 = run until Ctrl+C
 
-_default_out = f"output/vis_{MASK_MODE}_{'_'.join(CLASSES)}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+_default_out = f"output/vis_{MODE}_{'_'.join(CLASSES)}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
 OUTPUT_FILE  = str(_HERE / _cfg.get("pipeline", "output_file", fallback=_default_out))
 
 
@@ -143,7 +144,7 @@ def build_pipeline() -> Pipeline:
     pipeline.add("nvdsosd", "osd", {
         "process-mode": 0,
         "display-text": True,
-        "display-mask":  MASK_MODE > 0,
+        "display-mask":  MODE == "seg",
     })
     pipeline.link("conv1", "osd")
 

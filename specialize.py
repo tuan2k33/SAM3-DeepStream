@@ -3,20 +3,22 @@ SAM3 Specialize — ONNX + TRT (bbox-only or instance segmentation)
 ------------------------------------------------------------------
 Decomposes SAM3 into ONNX-traceable sub-modules for dynamic batch.
 
---mask false (default):
+--mode det:
     output:  detections [B, N_cls*200, 6]          x1 y1 x2 y2 score cls_id (pixel space)
     DS blobs: detections
     parser:  NvDsInferParseSAM3Det
 
---mask true:
+--mode seg (default):
     output:  detections [B, N_cls*200, 6]          x1 y1 x2 y2 score cls_id (pixel space)
              masks      [B, N_cls*200, Hm, Wm]     probability masks [0, 1]
     DS blobs: detections;masks
     parser:  NvDsInferParseSAM3Full
 
+Output dir: sam3_{imgsz}_{mode}_{classes}/  (e.g. sam3_1008_seg_adult_child_phone/)
+
 Usage:
-    CUDA_VISIBLE_DEVICES=1 python specialize.py --classes adult child phone --device cuda
-    CUDA_VISIBLE_DEVICES=1 python specialize.py --classes adult child phone --mask --device cuda
+    CUDA_VISIBLE_DEVICES=1 python specialize.py --classes adult child phone --mode det --device cuda
+    CUDA_VISIBLE_DEVICES=1 python specialize.py --classes adult child phone --mode seg --device cuda
 """
 
 import argparse
@@ -312,6 +314,13 @@ def validate_imgsz(model, imgsz, device="cpu"):
     return True
 
 
+def normalize_class(cls):
+    """Chi dung de dat ten folder engine (khong duoc co space trong duong dan):
+    'blue bus' va 'blue-bus' deu ve 'blue-bus'. Prompt gui cho model va
+    labels.txt van giu nguyen text nguoi dung go (arg goc, co the co space)."""
+    return "-".join(cls.strip().split())
+
+
 def encode_concepts(model, processor, classes):
     print(f"[Encode] {len(classes)} class(es): {classes}")
     embeds, masks = [], []
@@ -493,7 +502,9 @@ def specialize_and_export(
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--checkpoint", default="facebook/sam3")
-    p.add_argument("--classes",    nargs="+", required=True)
+    p.add_argument("--classes",    nargs="+", required=True,
+                    help="ten class (giu nguyen de lam prompt); rieng ten "
+                         "folder engine se thay space bang '-' de khong loi duong dan")
     p.add_argument("--imgsz", type=int, default=1008,
                     help="phai la boi so cua patch_size (14); anh vuong (H=W)")
     p.add_argument("--opset",      type=int, default=17)
@@ -502,15 +513,15 @@ def parse_args():
     p.add_argument("--opt-batch",  type=int, default=4)
     p.add_argument("--max-batch",  type=int, default=16)
     p.add_argument("--skip-trt",   action="store_true")
-    p.add_argument("--mask",       type=int, default=1, choices=[0, 1],
-                   help="0=det only  1=det+masks[B,N,36,36] fp16 (default)")
+    p.add_argument("--mode",       default="seg", choices=["det", "seg"],
+                   help="det=bbox only  seg=det+masks[B,N,36,36] fp16 (default)")
     return p.parse_args()
 
 
 def main():
     args        = parse_args()
-    suffix      = "_".join(args.classes)
-    config_dir  = os.path.join(os.path.dirname(__file__), f"sam3_{args.mask}_{suffix}")
+    suffix      = "_".join(normalize_class(c) for c in args.classes)
+    config_dir  = os.path.join(os.path.dirname(__file__), f"sam3_{args.imgsz}_{args.mode}_{suffix}")
     os.makedirs(config_dir, exist_ok=True)
     output_path = os.path.join(config_dir, "sam3.onnx")
     specialize_and_export(
@@ -524,7 +535,7 @@ def main():
         opt_batch=args.opt_batch,
         max_batch=args.max_batch,
         skip_trt=args.skip_trt,
-        with_mask=bool(args.mask),
+        with_mask=(args.mode == "seg"),
     )
 
 

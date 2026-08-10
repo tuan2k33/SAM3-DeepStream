@@ -8,20 +8,22 @@ the repo's own README/table says "MobileCLIP-S1" but that maps to a 12-layer
 "base" variant that does NOT match this checkpoint's weights).
 Source: https://github.com/SimonZeng7108/efficientsam3 (Apache 2.0).
 
---mask false (default):
+--mode det:
     output:  detections [B, N_cls*200, 6]          x1 y1 x2 y2 score cls_id (pixel space)
     DS blobs: detections
     parser:  NvDsInferParseSAM3Det
 
---mask true:
+--mode seg (default):
     output:  detections [B, N_cls*200, 6]          x1 y1 x2 y2 score cls_id (pixel space)
              masks      [B, N_cls*200, Hm, Wm]     probability masks [0, 1]
     DS blobs: detections;masks
     parser:  NvDsInferParseSAM3Full
 
+Output dir: efficientsam3_{imgsz}_{mode}_{classes}/
+
 Usage:
-    python3 specialize_efficientsam3.py --classes adult child phone --device cuda
-    python3 specialize_efficientsam3.py --classes adult child phone --mask --device cuda
+    python3 specialize_efficientsam3.py --classes adult child phone --mode det --device cuda
+    python3 specialize_efficientsam3.py --classes adult child phone --mode seg --device cuda
 """
 import sys
 import os
@@ -78,6 +80,13 @@ def build_ev_m(checkpoint_path=CHECKPOINT_PATH, device='cpu'):
         load_from_HF=False,
         device=device,
     )
+
+
+def normalize_class(cls):
+    """Chi dung de dat ten folder engine (khong duoc co space trong duong dan):
+    'blue bus' va 'blue-bus' deu ve 'blue-bus'. Prompt gui cho model va
+    labels.txt van giu nguyen text nguoi dung go (arg goc, co the co space)."""
+    return '-'.join(cls.strip().split())
 
 
 def encode_concepts(model, classes, device):
@@ -234,15 +243,15 @@ def parse_args():
     p.add_argument('--opt-batch', type=int, default=4)
     p.add_argument('--max-batch', type=int, default=16)
     p.add_argument('--skip-trt', action='store_true')
-    p.add_argument('--mask', type=int, default=1, choices=[0, 1],
-                    help='0=det only  1=det+masks[B,N,Hm,Wm] fp16 (default)')
+    p.add_argument('--mode', default='seg', choices=['det', 'seg'],
+                    help='det=bbox only  seg=det+masks[B,N,Hm,Wm] fp16 (default)')
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    suffix = '_'.join(args.classes)
-    config_dir = os.path.join(os.path.dirname(__file__), f'efficientsam3_{args.mask}_{suffix}')
+    suffix = '_'.join(normalize_class(c) for c in args.classes)
+    config_dir = os.path.join(os.path.dirname(__file__), f'efficientsam3_{args.imgsz}_{args.mode}_{suffix}')
     os.makedirs(config_dir, exist_ok=True)
     output_path = os.path.join(config_dir, 'efficientsam3.onnx')
     specialize_and_export(
@@ -256,7 +265,7 @@ def main():
         opt_batch=args.opt_batch,
         max_batch=args.max_batch,
         skip_trt=args.skip_trt,
-        with_mask=bool(args.mask),
+        with_mask=(args.mode == 'seg'),
     )
 
 

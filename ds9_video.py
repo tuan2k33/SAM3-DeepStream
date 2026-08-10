@@ -66,8 +66,8 @@ def _make_temp_config(video: Path) -> str:
         cfg["pipeline"] = {}
     cfg["pipeline"]["run_seconds"] = str(_video_duration(video))
     classes = [c.strip() for c in cfg.get("model", "classes").split(",")]
-    mask_mode = cfg.get("model", "mask_mode", fallback="1")
-    default_out = f"output/vis_{mask_mode}_{'_'.join(classes)}_{video.stem}.mp4"
+    mode = cfg.get("model", "mode", fallback="seg")
+    default_out = f"output/vis_{mode}_{'_'.join(classes)}_{video.stem}.mp4"
     cfg["pipeline"].setdefault("output_file", default_out)
     f = tempfile.NamedTemporaryFile(mode="w", suffix=".ini", delete=False)
     cfg.write(f)

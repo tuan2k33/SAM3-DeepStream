@@ -3,7 +3,7 @@ Standalone SAM3 image inference — no DeepStream, no TensorRT.
 Uses the Sam3Wrapper defined in sam3-deploy/specialize.py directly in eager PyTorch.
 
 Usage:
-    python3 test_sam3.py image.jpg --classes person car bus --mask 1 --conf 0.3
+    python3 test_sam3.py image.jpg --classes person car bus --mode seg --conf 0.3
 """
 import sys
 import os
@@ -56,13 +56,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('image')
     parser.add_argument('--classes', nargs='+', required=True)
-    parser.add_argument('--mask', type=int, default=0, choices=[0, 1])
+    parser.add_argument('--mode', default='det', choices=['det', 'seg'])
     parser.add_argument('--conf', type=float, default=0.3)
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--output', default='sam3_output.jpg')
     args = parser.parse_args()
 
-    wrapper = load_wrapper(args.classes, args.device, with_mask=bool(args.mask))
+    wrapper = load_wrapper(args.classes, args.device, with_mask=(args.mode == 'seg'))
 
     bgr = cv2.imread(args.image)
     h, w = bgr.shape[:2]
@@ -70,7 +70,7 @@ def main():
 
     with torch.no_grad():
         out = wrapper(x)
-    detections = out[0] if args.mask else out
+    detections = out[0] if args.mode == 'seg' else out
     det = detections[0].float()
     det = det[det[:, 4] > args.conf]
 

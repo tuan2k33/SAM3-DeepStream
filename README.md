@@ -29,6 +29,8 @@ Real-time open-vocabulary detection and instance segmentation on multi-camera RT
   | 350   | 41ms    | 24.0| clean |
   | 280   | 19ms    | 51.4| bad boxes |
 
+- `specialize.py` output folder renamed `sam3_{mode}_{classes}` → `sam3_{imgsz}_{mode}_{classes}`; `--mask 0/1` arg replaced by `--mode det/seg` (`config.txt`/`config_video.txt` field renamed `mask_mode` → `mode`, plus new `imgsz` field).
+
 </details>
 
 <details>
@@ -78,7 +80,8 @@ urls =
 
 [model]
 classes = adult, child, phone
-mask_mode = 1
+mode = seg
+imgsz = 1008
 
 [pipeline]
 width = 1920
@@ -91,7 +94,8 @@ run_seconds = 60
 |-------|-------------|
 | `urls` | RTSP sources, one per line (any number) |
 | `classes` | Comma-separated class names to detect |
-| `mask_mode` | `0` = detection only · `1` = detection + instance mask |
+| `mode` | `det` = detection only · `seg` = detection + instance mask (default) |
+| `imgsz` | SAM3 input size, must be a 14-multiple, square; default `1008` |
 | `width` / `height` | Pipeline resolution (all sources scaled to this) |
 | `infer_interval` | Run inference every N+1 frames; tracker fills the rest |
 | `run_seconds` | Stop after N seconds; `0` or omit = run until Ctrl+C |
@@ -109,7 +113,7 @@ run_seconds = 60
 
 To force re-export after changing classes:
 ```bash
-rm -rf sam3_1_adult_child_phone/
+rm -rf sam3_1008_seg_adult_child_phone/
 ./run.sh
 ```
 
@@ -122,7 +126,8 @@ rm -rf sam3_1_adult_child_phone/
 ```ini
 [model]
 classes = adult, child, phone
-mask_mode = 1
+mode = seg
+imgsz = 1008
 
 [pipeline]
 width = 1920
@@ -149,7 +154,7 @@ Internally this:
 4. Runs `ds9_rtsp.py` pointed at `localhost:8554/live`
 5. Saves output to `output/vis_{mode}_{classes}_{video_stem}.mp4`
 
-Make sure the engine exists first — run `./run.sh` or `specialize.py` once with the same classes/mask_mode as in `config_video.txt`.
+Make sure the engine exists first — run `./run.sh` or `specialize.py` once with the same classes/mode/imgsz as in `config_video.txt`.
 
 ---
 
@@ -159,8 +164,8 @@ Make sure the engine exists first — run `./run.sh` or `specialize.py` once wit
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 python3 specialize.py \
-    --classes adult child phone --mask 1 --device cuda
-# → sam3_1_adult_child_phone/sam3.onnx + sam3.engine + config_infer.txt + labels.txt
+    --classes adult child phone --mode seg --imgsz 1008 --device cuda
+# → sam3_1008_seg_adult_child_phone/sam3.onnx + sam3.engine + config_infer.txt + labels.txt
 ```
 
 Add `--skip-trt` to stop after ONNX export.
@@ -188,8 +193,8 @@ g++ -shared -fPIC -o libnvdsinfer_sam3.so nvdsparsebbox_sam3.cpp \
 specialize.py  (run once per class set)
   SAM3 ViT backbone + FPN + DETR decoder
     └─ text class embeddings baked as ONNX constants
-    └─ mask head output: 36×36 fp16 per object  (mask_mode=1)
-  → sam3_{mode}_{classes}/sam3.engine  (TRT FP16)
+    └─ mask head output: 36×36 fp16 per object  (mode=seg)
+  → sam3_{imgsz}_{mode}_{classes}/sam3.engine  (TRT FP16)
 
 ds9_rtsp.py  (runtime — live cameras or via ds9_video.py)
   N× nvurisrcbin (RTSP)
@@ -217,7 +222,7 @@ sam3-deploy/
 ├── config_video.txt          # model/pipeline settings for video inference
 ├── config.txt                # sources + settings for live cameras
 ├── weights/                  # sam3.pt
-├── sam3_{mode}_{classes}/    # generated: onnx + engine + config_infer.txt
+├── sam3_{imgsz}_{mode}_{classes}/  # generated: onnx + engine + config_infer.txt
 ├── .mediamtx/                # auto-downloaded mediamtx binary
 └── output/                   # annotated mp4 outputs
 ```

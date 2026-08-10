@@ -2,7 +2,7 @@
 
 Usage:
     python3 infer_engine_efficientsam3.py <engine_dir> <image.jpg> [--conf 0.2]
-    python3 infer_engine_efficientsam3.py efficientsam3_0_person bus.jpg --conf 0.2
+    python3 infer_engine_efficientsam3.py efficientsam3_1008_det_person bus.jpg --conf 0.2
 """
 import sys
 import os

@@ -4,7 +4,7 @@ Runs pure-PyTorch model, writes a temp mp4v video, then converts to H.264 and
 deletes the temp file.
 
 Usage:
-    python3 test_sam3_video.py video.mp4 --classes person car bus --mask 0 --conf 0.3
+    python3 test_sam3_video.py video.mp4 --classes person car bus --mode det --conf 0.3
 """
 import sys
 import os
@@ -24,14 +24,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('video')
     parser.add_argument('--classes', nargs='+', required=True)
-    parser.add_argument('--mask', type=int, default=0, choices=[0, 1])
+    parser.add_argument('--mode', default='det', choices=['det', 'seg'])
     parser.add_argument('--conf', type=float, default=0.3)
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--output', default='sam3_video_out.mp4')
     parser.add_argument('--max-frames', type=int, default=0, help='0 = whole video')
     args = parser.parse_args()
 
-    wrapper = load_wrapper(args.classes, args.device, with_mask=bool(args.mask))
+    wrapper = load_wrapper(args.classes, args.device, with_mask=(args.mode == 'seg'))
 
     cap = cv2.VideoCapture(args.video)
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -55,7 +55,7 @@ def main():
         x = preprocess(frame).to(args.device)
         with torch.no_grad():
             out = wrapper(x)
-        detections = out[0] if args.mask else out
+        detections = out[0] if args.mode == 'seg' else out
         det = detections[0].float()
         det = det[det[:, 4] > args.conf]
 
