@@ -296,16 +296,20 @@ class Sam3Wrapper(nn.Module):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def validate_imgsz(model, imgsz, device="cpu"):
+    """Kiem tra dieu kien thuc su ma Sam3Wrapper/_VisionEncoder can (khong
+    goi model.get_vision_features() cua HuggingFace goc - ham do luon fail
+    voi imgsz != 1008 vi khong co logic resize positional embedding, trong
+    khi Sam3Wrapper ben duoi TU VIET logic resize (tile+crop) nen ho tro
+    duoc nhieu imgsz khac 1008, mien la thoa 2 dieu kien: la boi so cua
+    patch_size, va anh vuong (H=W, do wrapper chi nhan 1 gia tri imgsz)."""
     print(f"[Validate] imgsz={imgsz} ...")
-    dummy = torch.randn(1, 3, imgsz, imgsz, device=device)
-    try:
-        with torch.no_grad():
-            out = model.get_vision_features(pixel_values=dummy)
-        print(f"[Validate] OK — {tuple(out.last_hidden_state.shape)}")
-        return True
-    except Exception as e:
-        print(f"[Validate] FAILED: {str(e)[:200]}")
+    ps = model.vision_encoder.backbone.config.patch_size
+    if imgsz % ps != 0:
+        print(f"[Validate] FAILED: imgsz={imgsz} khong chia het cho patch_size={ps}")
         return False
+    print(f"[Validate] OK — imgsz={imgsz} la boi so cua patch_size={ps} "
+          f"(Hp=Wp={imgsz // ps}), anh vuong")
+    return True
 
 
 def encode_concepts(model, processor, classes):
@@ -423,7 +427,7 @@ def specialize_and_export(
     print(f"[Load] {time.perf_counter()-t0:.1f}s")
 
     if not validate_imgsz(model, imgsz, device):
-        raise ValueError(f"imgsz={imgsz} not compatible")
+        raise ValueError(f"imgsz={imgsz} not compatible (phai la boi so cua patch_size)")
 
     text_embeds, attn_masks = encode_concepts(model, processor, classes)
 
@@ -490,7 +494,8 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--checkpoint", default="facebook/sam3")
     p.add_argument("--classes",    nargs="+", required=True)
-    p.add_argument("--imgsz",      type=int, default=1008)
+    p.add_argument("--imgsz", type=int, default=1008,
+                    help="phai la boi so cua patch_size (14); anh vuong (H=W)")
     p.add_argument("--opset",      type=int, default=17)
     p.add_argument("--device",     default="cpu", choices=["cpu", "cuda"])
     p.add_argument("--min-batch",  type=int, default=1)

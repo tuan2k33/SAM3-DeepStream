@@ -8,10 +8,41 @@ Real-time open-vocabulary detection and instance segmentation on multi-camera RT
 
 ## Requirements
 
-- NVIDIA GPU, CUDA 13.0, TensorRT 10.x
-- DeepStream 9 + pyservicemaker
-- Python packages: `torch`, `transformers`, `onnx`, `opencv-python`
-- SAM3 checkpoint at `weights/sam3.pt`
+- NVIDIA GPU 50x series
+- DeepStream 9 + pyservicemaker, CUDA 13, TensorRT
+- SAM3 checkpoint at HF
+
+---
+
+## Updates
+
+### 2026-08-10
+- WxH other than 1008x1008 works now with conditions: W and H must be equal and must be 14-multiple. Smaller input size leads to less accurate bounding boxes (see /test).
+
+  | imgsz | latency | qps | quality |
+  |-------|---------|-----|---------|
+  | 1008  | 179ms   | 5.6 | clean |
+  | 504   | 55ms    | 18.2| clean |
+  | 420   | 47.5ms  | 20.9| clean |
+  | 350   | 41ms    | 24.0| clean |
+  | 280   | 19ms    | 51.4| bad boxes |
+
+### 2026-08-06
+- EfficientSAM3 works now.
+
+### 2026-07-20
+- Fixed detection score calculation: SAM3's final per-query score must be gated by the scene-level presence token (matching the HF `transformers` reference implementation).
+
+### 2026-06-26
+- Dynamic batch works now.
+
+### 2026-06-25
+- Initial commit and first update to the repo.
+
+## Notes
+
+- All `gpu-id` properties in DeepStream must be `0`; use `CUDA_VISIBLE_DEVICES=N` to select the physical GPU.
+- SAM3.1 (`weights/sam3.1_multiplex.pt`) uses a different architecture and is not yet supported by `specialize.py`.
 
 ---
 
@@ -170,14 +201,6 @@ sam3-deploy/
 ├── .mediamtx/                # auto-downloaded mediamtx binary
 └── output/                   # annotated mp4 outputs
 ```
-
----
-
-## Notes
-
-- `imgsz=1008` is the only validated resolution for the SAM3 ViT backbone.
-- All `gpu-id` properties in DeepStream must be `0`; use `CUDA_VISIBLE_DEVICES=N` to select the physical GPU.
-- SAM3.1 (`weights/sam3.1_multiplex.pt`) uses a different architecture and is not yet supported by `specialize.py`.
 
 ---
 
