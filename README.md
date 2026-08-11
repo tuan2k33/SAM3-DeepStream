@@ -19,7 +19,7 @@ Real-time open-vocabulary detection and instance segmentation on multi-camera RT
 <details open>
 <summary><strong>2026-08-10</strong></summary>
 
-- WxH other than 1008x1008 works now with conditions: W and H must be equal and must be 14-multiple. Smaller input size leads to less accurate bounding boxes (see /test).
+- WxH other than 1008x1008 works now with conditions: W and H must be equal and must be 14-multiple. Smaller input size leads to less accurate bounding boxes (see /test, will investigate more about this).
 
   | imgsz | latency | qps | quality |
   |-------|---------|-----|---------|
@@ -27,7 +27,7 @@ Real-time open-vocabulary detection and instance segmentation on multi-camera RT
   | 504   | 55ms    | 18.2| clean |
   | 420   | 47.5ms  | 20.9| clean |
   | 350   | 41ms    | 24.0| clean |
-  | 280   | 19ms    | 51.4| bad boxes |
+  | 280   | 19.3ms  | 51.8| clean at conf≥0.6 (default conf bumped 0.5→0.6, --pad bumped 0.05→0.10) |
 
 - `specialize.py` output folder renamed `sam3_{mode}_{classes}` → `sam3_{imgsz}_{mode}_{classes}`; `--mask 0/1` arg replaced by `--mode det/seg` (`config.txt`/`config_video.txt` field renamed `mask_mode` → `mode`, plus new `imgsz` field).
 

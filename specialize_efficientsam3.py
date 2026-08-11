@@ -19,7 +19,25 @@ Source: https://github.com/SimonZeng7108/efficientsam3 (Apache 2.0).
     DS blobs: detections;masks
     parser:  NvDsInferParseSAM3Full
 
-Output dir: efficientsam3_{imgsz}_{mode}_{classes}/
+Output dir: efficientsam3_1008_{mode}_{classes}/
+
+imgsz bi KHOA cung o 1008 (khac specialize.py cua SAM3 goc van cho chinh
+--imgsz): EfficientSAM3 train o 1008 va tut chat luong ro ret khi ha xuong,
+khong phai tut deu ma VO detection. Do tren bus.jpg (class bus+person):
+
+    1008: bus 0.85 | 4 nguoi, moi nguoi 1 box om sat (0.77 0.76 0.69 0.49)
+    504 : bus 0.79 | nguoi giua BI TACH LAM 2 BOX (0.33 than tren + 0.40
+                     than duoi), nguoi ria trai MAT HAN, score tut ~0.2
+
+Day KHONG phai loi export: da doi chieu ONNX vs PyTorch o ca 2 do phan giai,
+lech chi 0.047px (1008) va 0.016px (504) tren cac box score>0.5 -- ONNX tai
+tao dung y het PyTorch, chinh model o 504 da ra box sai san. Nguyen nhan la
+feature map co con mot nua moi chieu (126 thay vi 252 o tang stride-4) nen
+nguoi o xa/bi che khong con du pixel de decoder gom thanh 1 object.
+
+(Da loai tru gia thuyet cache pos-emb: PositionEmbeddingSine.cache key theo
+kich thuoc FEATURE MAP, ma pos-emb la ham thuan cua kich thuoc do va duoc
+normalize ve [0,2pi], nen cache hit luon tra dung gia tri cho size do.)
 
 Usage:
     python3 specialize_efficientsam3.py --classes adult child phone --mode det --device cuda
@@ -127,18 +145,26 @@ class EfficientSam3Wrapper(nn.Module):
             self.register_buffer(f'text_mask_{i}', text_out['language_mask'])
             self.register_buffer(f'text_embeds_{i}', text_out['language_embeds'])
 
-        self.find_stage = FindStage(
-            img_ids=torch.tensor([0], device=device, dtype=torch.long),
-            text_ids=torch.tensor([0], device=device, dtype=torch.long),
-            input_boxes=None, input_boxes_mask=None, input_boxes_label=None,
-            input_points=None, input_points_mask=None,
-        )
         self.register_buffer('scale', torch.tensor([imgsz, imgsz, imgsz, imgsz], dtype=torch.float32))
 
     def forward(self, pixel_values: torch.Tensor):
         B = pixel_values.shape[0]
         backbone_out = self.model.backbone.forward_image(pixel_values)
-        geometric_prompt = self.model._get_dummy_prompt()
+        geometric_prompt = self.model._get_dummy_prompt(num_prompts=B)
+
+        # img_ids/text_ids phai dai = B, moi "find query" ung voi 1 anh
+        # trong batch (ghep voi 1 ban sao text da .expand(-1,B,-1) o duoi).
+        # Truoc day bi hardcode torch.tensor([0]) (dai 1) trong __init__ nen
+        # _get_img_feats() luon chi lay dung anh dau tien (index 0) trong
+        # backbone_fpn bat ke batch size la bao nhieu -> detections output
+        # bi "dinh" ve batch=1 du pixel_values co batch>1 (cac anh con lai
+        # trong batch bi bo qua hoan toan, khong phai loi export/ONNX).
+        find_ids = torch.arange(B, device=pixel_values.device, dtype=torch.long)
+        find_stage = FindStage(
+            img_ids=find_ids, text_ids=find_ids,
+            input_boxes=None, input_boxes_mask=None, input_boxes_label=None,
+            input_points=None, input_points_mask=None,
+        )
 
         det_chunks, mask_chunks = [], []
         for i in range(self.num_classes):
@@ -150,7 +176,7 @@ class EfficientSam3Wrapper(nn.Module):
 
             outputs = self.model.forward_grounding(
                 backbone_out=backbone_out,
-                find_input=self.find_stage,
+                find_input=find_stage,
                 geometric_prompt=geometric_prompt,
                 find_target=None,
             )
@@ -176,10 +202,11 @@ class EfficientSam3Wrapper(nn.Module):
 
 def specialize_and_export(
     classes, output_path, checkpoint_path=CHECKPOINT_PATH,
-    imgsz=IMGSZ, opset=17, device='cpu',
+    opset=17, device='cpu',
     min_batch=1, opt_batch=4, max_batch=16,
     skip_trt=False, with_mask=False,
 ):
+    imgsz = IMGSZ  # khoa cung, xem docstring dau file
     t0 = time.perf_counter()
     model = build_ev_m(checkpoint_path, device)
     print(f'[Load] {time.perf_counter() - t0:.1f}s')
@@ -236,7 +263,6 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--checkpoint', default=CHECKPOINT_PATH)
     p.add_argument('--classes', nargs='+', required=True)
-    p.add_argument('--imgsz', type=int, default=IMGSZ)
     p.add_argument('--opset', type=int, default=17)
     p.add_argument('--device', default='cpu', choices=['cpu', 'cuda'])
     p.add_argument('--min-batch', type=int, default=1)
@@ -251,14 +277,13 @@ def parse_args():
 def main():
     args = parse_args()
     suffix = '_'.join(normalize_class(c) for c in args.classes)
-    config_dir = os.path.join(os.path.dirname(__file__), f'efficientsam3_{args.imgsz}_{args.mode}_{suffix}')
+    config_dir = os.path.join(os.path.dirname(__file__), f'efficientsam3_{IMGSZ}_{args.mode}_{suffix}')
     os.makedirs(config_dir, exist_ok=True)
     output_path = os.path.join(config_dir, 'efficientsam3.onnx')
     specialize_and_export(
         classes=args.classes,
         output_path=output_path,
         checkpoint_path=args.checkpoint,
-        imgsz=args.imgsz,
         opset=args.opset,
         device=args.device,
         min_batch=args.min_batch,
