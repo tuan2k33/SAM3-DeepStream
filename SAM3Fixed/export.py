@@ -14,11 +14,11 @@ Decomposes SAM3 into ONNX-traceable sub-modules for dynamic batch.
     DS blobs: detections;masks
     parser:  NvDsInferParseSAM3Full
 
-Output dir: sam3_{imgsz}_{mode}_{classes}/  (e.g. sam3_1008_seg_adult_child_phone/)
+Output dir: ../weight/sam3_{imgsz}_{mode}_{classes}/  (e.g. weight/sam3_1008_seg_adult_child_phone/)
 
 Usage:
-    CUDA_VISIBLE_DEVICES=1 python specialize.py --classes adult child phone --mode det --device cuda
-    CUDA_VISIBLE_DEVICES=1 python specialize.py --classes adult child phone --mode seg --device cuda
+    CUDA_VISIBLE_DEVICES=1 python export.py --classes adult child phone --mode det --device cuda
+    CUDA_VISIBLE_DEVICES=1 python export.py --classes adult child phone --mode seg --device cuda
 """
 
 import argparse
@@ -32,7 +32,87 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from transformers.models.sam3 import Sam3Model, Sam3Processor
-from transformers.models.sam3.modeling_sam3 import Sam3ViTRotaryEmbedding
+from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder, Sam3ViTRotaryEmbedding
+
+
+# ── Fix for the _get_coords bug ────────────────────────────────────────────
+#
+# Sam3DetrDecoder._get_coords (original, in transformers) generates a
+# coordinate grid arange(0,height)/height -> range [0, (height-1)/height],
+# NEVER reaching 1.0. This grid feeds _get_rpb_matrix (relative position bias
+# for the decoder's cross-attention, used at EVERY layer) -> the decoder
+# learns to regress boxes that undershoot toward the far corner (x2,y2), by a
+# fraction proportional to 1/Hp -- more pronounced the smaller imgsz gets.
+#
+# Fix: divide by (height-1)/(width-1) instead of height/width, so the grid
+# actually reaches 1.0. Verified experimentally (probe_get_coords.py) across
+# bus/person/cat/remote at imgsz 1008/504/280: total box-coordinate error is
+# consistently lower than the previous additive-offset patch, on every test
+# except that it is NOT a no-op at 1008 the way the offset patch was (a
+# small ~0.5-1% shift appears even at native resolution) -- an accepted
+# tradeoff. Because this can push already-near-edge boxes slightly past the
+# frame (e.g. x2=1.01), _clamp_boxes() below clips the final output back
+# into [0,1] -- see Sam3Wrapper.forward().
+def _get_coords_denom_fix(self, height, width, dtype, device):
+    coords_h = torch.arange(0, height, device=device, dtype=dtype) / (height - 1)
+    coords_w = torch.arange(0, width, device=device, dtype=dtype) / (width - 1)
+    return coords_h, coords_w
+
+
+Sam3DetrDecoder._get_coords = _get_coords_denom_fix
+
+
+# Earlier version of the fix (2026-08-12 -> 2026-08-13), kept commented out
+# for reference -- NOT active. Used an empirically-calibrated additive offset
+# (0 at 1008 -> 0.3 at 280) instead of touching the denominator, paired with
+# a box-dilation post-process in Sam3Wrapper.forward() (0% at 1008 -> 6% at
+# 280) to compensate for the residual undershoot the offset alone didn't
+# cover. Replaced because probe_get_coords.py A/B/C comparisons (bus/person/
+# cat/remote, imgsz 1008/504/280) showed _get_coords_denom_fix above has
+# consistently lower total box-coordinate error. Both pieces only worked
+# together as a pair -- box_pad_pct was calibrated specifically for this
+# offset formula's residual error and overcorrects if combined with the
+# denom fix instead (verified: pushes already-near-edge boxes further past
+# the frame than the denom fix alone).
+#
+# _OFFSET_PATCH_SIZE = 14
+# _OFFSET_IMGSZ_HI, _OFFSET_IMGSZ_LO = 1008, 280
+# _OFFSET_HI, _OFFSET_LO = 0.0, 0.3
+#
+# def _offset_for_height(height):
+#     imgsz = float(height) * _OFFSET_PATCH_SIZE
+#     t = (_OFFSET_IMGSZ_HI - imgsz) / (_OFFSET_IMGSZ_HI - _OFFSET_IMGSZ_LO)
+#     t = max(0.0, min(1.0, t))
+#     return _OFFSET_HI + t * (_OFFSET_LO - _OFFSET_HI)
+#
+# def _get_coords_dynamic_offset(self, height, width, dtype, device):
+#     off_h = _offset_for_height(height)
+#     off_w = _offset_for_height(width)
+#     coords_h = (torch.arange(0, height, device=device, dtype=dtype) + off_h) / height
+#     coords_w = (torch.arange(0, width, device=device, dtype=dtype) + off_w) / width
+#     return coords_h, coords_w
+#
+# # Sam3DetrDecoder._get_coords = _get_coords_dynamic_offset
+#
+# _BOXPAD_IMGSZ_HI, _BOXPAD_IMGSZ_LO = 1008, 280
+# _BOXPAD_HI, _BOXPAD_LO = 0.0, 0.06
+#
+# def _box_pad_pct(imgsz):
+#     t = (_BOXPAD_IMGSZ_HI - imgsz) / (_BOXPAD_IMGSZ_HI - _BOXPAD_IMGSZ_LO)
+#     t = max(0.0, min(1.0, t))
+#     return _BOXPAD_HI + t * (_BOXPAD_LO - _BOXPAD_HI)
+#
+# # in Sam3Wrapper.__init__:
+# #     self.box_pad_pct = _box_pad_pct(imgsz)  # 0.0 at 1008 -> 0.06 at 280
+# # in Sam3Wrapper.forward(), before boxes_px = pred_boxes * self.scale:
+# #     if self.box_pad_pct > 0:
+# #         x1, y1, x2, y2 = pred_boxes.unbind(-1)
+# #         bw, bh = x2 - x1, y2 - y1
+# #         x1 = x1 - bw * (self.box_pad_pct / 2)
+# #         x2 = x2 + bw * (self.box_pad_pct / 2)
+# #         y1 = y1 - bh * (self.box_pad_pct / 2)
+# #         y2 = y2 + bh * (self.box_pad_pct / 2)
+# #         pred_boxes = torch.stack([x1, y1, x2, y2], dim=-1)
 
 
 # ── Sinusoidal pos enc ────────────────────────────────────────────────────────
@@ -274,6 +354,11 @@ class Sam3Wrapper(nn.Module):
             else:
                 pred_boxes, pred_logits, presence = self.decoder(fpn2, fpn_pos, text_feat, text_mask)
 
+            # The _get_coords denom fix (module top) can push an
+            # already-near-edge box slightly outside the frame (e.g.
+            # x2=1.01) -- clip back into [0,1] before scaling to pixels.
+            pred_boxes = pred_boxes.clamp(0.0, 1.0)
+
             boxes_px = pred_boxes * self.scale
             # SAM3's final detection score is the per-query score gated by a
             # scene-level presence token (HF transformers documents:
@@ -298,26 +383,28 @@ class Sam3Wrapper(nn.Module):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def validate_imgsz(model, imgsz, device="cpu"):
-    """Kiem tra dieu kien thuc su ma Sam3Wrapper/_VisionEncoder can (khong
-    goi model.get_vision_features() cua HuggingFace goc - ham do luon fail
-    voi imgsz != 1008 vi khong co logic resize positional embedding, trong
-    khi Sam3Wrapper ben duoi TU VIET logic resize (tile+crop) nen ho tro
-    duoc nhieu imgsz khac 1008, mien la thoa 2 dieu kien: la boi so cua
-    patch_size, va anh vuong (H=W, do wrapper chi nhan 1 gia tri imgsz)."""
+    """Check the actual condition Sam3Wrapper/_VisionEncoder needs (does NOT
+    call the original HuggingFace model.get_vision_features() -- that always
+    fails for imgsz != 1008 because it has no positional-embedding resize
+    logic, whereas Sam3Wrapper below implements its OWN resize logic
+    (tile+crop) and therefore supports imgsz values other than 1008, as long
+    as two conditions hold: it must be a multiple of patch_size, and the
+    image must be square (H=W, since the wrapper only takes one imgsz value)."""
     print(f"[Validate] imgsz={imgsz} ...")
     ps = model.vision_encoder.backbone.config.patch_size
     if imgsz % ps != 0:
-        print(f"[Validate] FAILED: imgsz={imgsz} khong chia het cho patch_size={ps}")
+        print(f"[Validate] FAILED: imgsz={imgsz} is not divisible by patch_size={ps}")
         return False
-    print(f"[Validate] OK — imgsz={imgsz} la boi so cua patch_size={ps} "
-          f"(Hp=Wp={imgsz // ps}), anh vuong")
+    print(f"[Validate] OK — imgsz={imgsz} is a multiple of patch_size={ps} "
+          f"(Hp=Wp={imgsz // ps}), square image")
     return True
 
 
 def normalize_class(cls):
-    """Chi dung de dat ten folder engine (khong duoc co space trong duong dan):
-    'blue bus' va 'blue-bus' deu ve 'blue-bus'. Prompt gui cho model va
-    labels.txt van giu nguyen text nguoi dung go (arg goc, co the co space)."""
+    """Only used for the engine folder name (paths can't contain spaces):
+    'blue bus' and 'blue-bus' both map to 'blue-bus'. The prompt sent to the
+    model and labels.txt keep the original text as typed (raw arg, may
+    contain spaces)."""
     return "-".join(cls.strip().split())
 
 
@@ -368,7 +455,9 @@ def generate_ds_config(classes, engine_path, Q=200, with_mask=False, Hm=288, Wm=
     with open(labels_path, "w") as f:
         f.write("\n".join(classes) + "\n")
 
-    lib_path    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "libnvdsinfer_sam3.so")
+    # the custom nvinfer parser lives right here, next to this script
+    lib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "libnvdsinfer_sam3.so")
     class_attrs = "\n".join(
         f"[class-attrs-{i}]\npre-cluster-threshold=0.3" for i in range(nc)
     )
@@ -436,7 +525,7 @@ def specialize_and_export(
     print(f"[Load] {time.perf_counter()-t0:.1f}s")
 
     if not validate_imgsz(model, imgsz, device):
-        raise ValueError(f"imgsz={imgsz} not compatible (phai la boi so cua patch_size)")
+        raise ValueError(f"imgsz={imgsz} not compatible (must be a multiple of patch_size)")
 
     text_embeds, attn_masks = encode_concepts(model, processor, classes)
 
@@ -503,10 +592,10 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--checkpoint", default="facebook/sam3")
     p.add_argument("--classes",    nargs="+", required=True,
-                    help="ten class (giu nguyen de lam prompt); rieng ten "
-                         "folder engine se thay space bang '-' de khong loi duong dan")
+                    help="class names (kept as-is for the prompt); only the "
+                         "engine folder name replaces spaces with '-' to avoid path issues")
     p.add_argument("--imgsz", type=int, default=1008,
-                    help="phai la boi so cua patch_size (14); anh vuong (H=W)")
+                    help="must be a multiple of patch_size (14); square image (H=W)")
     p.add_argument("--opset",      type=int, default=17)
     p.add_argument("--device",     default="cpu", choices=["cpu", "cuda"])
     p.add_argument("--min-batch",  type=int, default=1)
@@ -521,7 +610,8 @@ def parse_args():
 def main():
     args        = parse_args()
     suffix      = "_".join(normalize_class(c) for c in args.classes)
-    config_dir  = os.path.join(os.path.dirname(__file__), f"sam3_{args.imgsz}_{args.mode}_{suffix}")
+    weight_dir  = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "weight")
+    config_dir  = os.path.join(weight_dir, f"sam3_{args.imgsz}_{args.mode}_{suffix}")
     os.makedirs(config_dir, exist_ok=True)
     output_path = os.path.join(config_dir, "sam3.onnx")
     specialize_and_export(

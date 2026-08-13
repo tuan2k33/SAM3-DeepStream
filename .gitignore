@@ -5,19 +5,10 @@ sam3.egg-info/
 # model weights & exports
 *.pt
 *.onnx
-*.trt
 *.engine
 *.plan
+weight/
 
-# videos & images
-*.mp4
-*.avi
-*.mkv
-*.jpeg
-*.png
-# user data
-exemplar/
-*record*
 
 # python artifacts
 __pycache__/
@@ -35,6 +26,3 @@ build/
 .vscode/
 .idea/
 *.swp
-*.txt
-*CLAUDE*
-!requirements.txt

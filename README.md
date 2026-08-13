@@ -2,14 +2,14 @@
 
 Real-time open-vocabulary detection and instance segmentation on multi-camera RTSP streams using [SAM3](https://github.com/facebookresearch/sam3) and NVIDIA DeepStream 9.
 
-**Workflow:** define classes in a config file → `run.sh` exports a TRT FP16 engine (once) → runs a DeepStream pipeline → saves annotated mp4.
+**Workflow:** write a `config.txt` → run the pipeline script for the architecture you want (`SAM3Fixed/ds9_rtsp.py` or `SAM3Open/ds9_rtsp.py`) → saves annotated mp4. Setup steps live in [SAM3Fixed/GUIDE.md](SAM3Fixed/GUIDE.md) and [SAM3Open/GUIDE.md](SAM3Open/GUIDE.md).
 
 ---
 
 ## Requirements
 
 - NVIDIA GPU 50x series
-- DeepStream 9 + pyservicemaker, CUDA 13, TensorRT
+- DeepStream 9x + pyservicemaker, CUDA 13x, TensorRT 10x
 - SAM3 checkpoint at HF
 
 ---
@@ -17,9 +17,28 @@ Real-time open-vocabulary detection and instance segmentation on multi-camera RT
 ## Updates
 
 <details open>
+<summary><strong>2026-08-13</strong></summary>
+
+- **Fix small-imgsz model degrading (>280 should work).** 
+  Tiny imgsz like 280 on small object will still have high-error boxes
+  due to feature loss while downsizing an image, so not recommend below 280.
+- **Repository architecture reconstructed.** 
+  See `SAM3Fixed/` and `SAM3Open/`.
+- **All generated engines now live in one shared `weight/` folder** 
+  `weight/sam3_{imgsz}_{mode}_{classes}/` for SAM3Fixed,
+  `weight/sam3_{imgsz}_open/` for SAM3Open (det only).
+- **SAM3 DeepStream pipeline OTF model update**
+  Can choose between:
+   + Live prompt change -> text tokenizer re-encode -> nvinfer reload -> DeepStream
+   + Specialize another SAM3Detector -> change path -> nvinfer reload -> DeepStream
+
+
+</details>
+
+<details>
 <summary><strong>2026-08-10</strong></summary>
 
-- WxH other than 1008x1008 works now with conditions: W and H must be equal and must be 14-multiple. Smaller input size leads to less accurate bounding boxes (see /test, will investigate more about this).
+- WxH other than 1008x1008 works now with conditions: W and H must be equal and must be 14-multiple. Smaller input size leads to less accurate bounding boxes.
 
   | imgsz | latency | qps | quality |
   |-------|---------|-----|---------|
@@ -64,148 +83,96 @@ Real-time open-vocabulary detection and instance segmentation on multi-camera RT
 ## Notes
 
 - All `gpu-id` properties in DeepStream must be `0`; use `CUDA_VISIBLE_DEVICES=N` to select the physical GPU.
-- SAM3.1 (`weights/sam3.1_multiplex.pt`) uses a different architecture and is not yet supported by `specialize.py`.
+- SAM3.1 (`weights/sam3.1_multiplex.pt`) uses a different architecture and is not yet supported by `export.py`.
 
 ---
 
-## Quick start — live RTSP cameras
+## Which one do I want?
 
-### 1. Write `config.txt`
+| | [`SAM3Fixed/`](SAM3Fixed/GUIDE.md) | [`SAM3Open/`](SAM3Open/GUIDE.md) |
+|---|---|---|
+| Prompt | Baked into the engine at export time | Free text, supplied at runtime |
+| Classes per camera | Multiple | One |
+| Changing the prompt | Re-export (or hot-swap to another already-built engine) | Just edit `config.txt` — no re-export ever |
+| Cost | Scales with number of baked classes | Fixed, independent of prompt |
 
-```ini
-[sources]
-urls =
-    rtsp://user:pass@192.168.1.10:554
-    rtsp://user:pass@192.168.1.11:554
-
-[model]
-classes = adult, child, phone
-mode = seg
-imgsz = 1008
-
-[pipeline]
-width = 1920
-height = 1080
-infer_interval = 4
-run_seconds = 60
-```
-
-| Field | Description |
-|-------|-------------|
-| `urls` | RTSP sources, one per line (any number) |
-| `classes` | Comma-separated class names to detect |
-| `mode` | `det` = detection only · `seg` = detection + instance mask (default) |
-| `imgsz` | SAM3 input size, must be a 14-multiple, square; default `1008` |
-| `width` / `height` | Pipeline resolution (all sources scaled to this) |
-| `infer_interval` | Run inference every N+1 frames; tracker fills the rest |
-| `run_seconds` | Stop after N seconds; `0` or omit = run until Ctrl+C |
-| `output_file` | Output path; omit = auto-named `output/vis_{mode}_{classes}_{timestamp}.mp4` |
-
-> `config.txt` contains RTSP credentials — it is in `.gitignore` and never committed.
-
-### 2. Run
-
-```bash
-./run.sh
-```
-
-`run.sh` reads `config.txt`, exports the engine if needed, then starts the pipeline.
-
-To force re-export after changing classes:
-```bash
-rm -rf sam3_1008_seg_adult_child_phone/
-./run.sh
-```
-
----
-
-## Quick start — local video file
-
-### 1. Write `config_video.txt`
-
-```ini
-[model]
-classes = adult, child, phone
-mode = seg
-imgsz = 1008
-
-[pipeline]
-width = 1920
-height = 1080
-infer_interval = 4
-```
-
-No `[sources]` needed — the video file is the source.
-No `run_seconds` needed — duration is read from the video automatically.
-`output_file` is auto-named from the video filename if omitted.
-
-`config_video.txt` is committed to the repo (no credentials).
-
-### 2. Run
-
-```bash
-CUDA_VISIBLE_DEVICES=1 python3 ds9_video.py video_test/my_video.mp4
-```
-
-Internally this:
-1. Downloads `mediamtx` once to `.mediamtx/` (single binary, ~30 MB)
-2. Starts a local RTSP server at `rtsp://localhost:8554/live`
-3. Loops the video via `ffmpeg` into that server
-4. Runs `ds9_rtsp.py` pointed at `localhost:8554/live`
-5. Saves output to `output/vis_{mode}_{classes}_{video_stem}.mp4`
-
-Make sure the engine exists first — run `./run.sh` or `specialize.py` once with the same classes/mode/imgsz as in `config_video.txt`.
-
----
-
-## Manual steps
-
-### Export engine only
-
-```bash
-CUDA_VISIBLE_DEVICES=1 python3 specialize.py \
-    --classes adult child phone --mode seg --imgsz 1008 --device cuda
-# → sam3_1008_seg_adult_child_phone/sam3.onnx + sam3.engine + config_infer.txt + labels.txt
-```
-
-Add `--skip-trt` to stop after ONNX export.
-
-### Run RTSP pipeline only
-
-```bash
-CUDA_VISIBLE_DEVICES=1 python3 ds9_rtsp.py
-```
-
-### Recompile C++ parser (after editing `nvdsparsebbox_sam3.cpp`)
-
-```bash
-g++ -shared -fPIC -o libnvdsinfer_sam3.so nvdsparsebbox_sam3.cpp \
-    -I/opt/nvidia/deepstream/deepstream/sources/includes \
-    -I/usr/local/cuda-13.0/targets/x86_64-linux/include \
-    -std=c++14
-```
+Setup, `config.txt` reference, and manual export/recompile steps for each are in their own guide: **[SAM3Fixed/GUIDE.md](SAM3Fixed/GUIDE.md)** and **[SAM3Open/GUIDE.md](SAM3Open/GUIDE.md)**.
 
 ---
 
 ## How it works
 
+`SAM3Fixed/` and `SAM3Open/` are two fully self-contained folders, one per
+architecture: each has its own export script, custom `nvinfer` plugin, and
+DeepStream pipeline script(s) + `config.txt`. Both write their generated
+engines into a shared `weight/` folder at the repo root instead of next to
+themselves. The only cross-folder dependency is `SAM3Open/export.py`
+importing `_VisionEncoder`/`_Decoder` from `SAM3Fixed/export.py` (both
+architectures trace the same ONNX-traceable submodules).
+
+There are two ways to give SAM3 a prompt:
+
+**`SAM3Fixed/`** — classes are baked into the graph at export time as ONNX
+constants. The resulting engine takes only an image as input and outputs
+detections directly, running natively in `nvinfer` exactly like a YOLO model.
+Changing classes requires re-exporting (or swapping to a different
+already-exported engine on the fly, see `spec_cache.py`).
+
 ```
-specialize.py  (run once per class set)
+export.py  (run once per class set)
   SAM3 ViT backbone + FPN + DETR decoder
     └─ text class embeddings baked as ONNX constants
     └─ mask head output: 36×36 fp16 per object  (mode=seg)
-  → sam3_{imgsz}_{mode}_{classes}/sam3.engine  (TRT FP16)
+  → weight/sam3_{imgsz}_{mode}_{classes}/sam3.engine  (TRT FP16)
 
-ds9_rtsp.py  (runtime — live cameras or via ds9_video.py)
+ds9_rtsp.py  (runtime — live RTSP cameras)
   N× nvurisrcbin (RTSP)
-    → nvstreammux → nvinfer (SAM3 engine, interval=4)
-        → nvtracker (NvDCF, propagates boxes to skipped frames)
-            → nvmultistreamtiler → nvdsosd (boxes + masks)
-                → nvh264enc → mp4mux → output/
-
-ds9_video.py  (video file wrapper)
-  ffmpeg loop → mediamtx (localhost:8554) → ds9_rtsp.py
+    → nvstreammux → nvinfer (weight/ engine, interval=4)
+        → nvtracker (propagates boxes to skipped frames)
+            → PerCameraFilter (filters union detections down to each camera's own classes)
+                → nvmultistreamtiler → nvdsosd (boxes + masks)
+                    → nvv4l2h264enc → mp4mux → output/
 ```
+
+`spec_cache.py` adds a union-prompt layer on top: multiple cameras with
+different prompts all share ONE engine baked (into `weight/`) with the
+union of every class needed, with `PerCameraFilter` filtering detections back
+down to what each camera actually asked for by `cls_id`. Because `nvinfer`'s
+`config-file-path` property is live-swappable at runtime as long as input
+resolution stays the same, this also lets `ds9_rtsp.py` hot-reload a running
+pipeline onto a newly-built engine without a restart, by watching `config.txt`
+for changes.
+
+**`SAM3Open/`** — open-vocabulary: the text prompt is encoded into a
+tensor at runtime (`export.py` produces a separate text-encoder engine +
+vision-decoder engine) instead of being baked into the graph. Never requires
+re-exporting to change the prompt.
+
+```
+SAM3Open/export.py  (run once, ever)
+  → weight/sam3_1008_open/text_encoder.engine     input_ids+attention_mask → text_features+text_mask
+  → weight/sam3_1008_open/vision_decoder.engine   pixel_values+text_features+text_mask → detections
+
+SAM3Open/ds9_rtsp.py  (runtime — live cameras)
+  sam3open_text.py encodes each camera's prompt via text_encoder.engine
+  (Python/TensorRT, not through nvinfer), writes text_features/text_mask
+  snapshot files (one row per camera) to /dev/shm
+
+  N× nvurisrcbin (RTSP)
+    → nvstreammux → nvinfer (vision_decoder.engine, interval=5)
+        │   nvdsparsebbox_sam3.cpp's NvDsInferInitializeInputLayers reads
+        │   the snapshot files once per context load, injecting camera b's
+        │   prompt encoding into batch row b -- so every camera is scored
+        │   against its OWN prompt in the SAME forward pass
+        → nvtracker → PromptLabeler (labels each camera's boxes from its own prompt string)
+            → nvmultistreamtiler → nvdsosd → nvv4l2h264enc → mp4mux → output/
+```
+
+A prompt change only needs a snapshot rewrite + `nvinfer.set({"config-file-path":
+<same path>})`, which reloads the context and re-triggers
+`NvDsInferInitializeInputLayers` — verified empirically that reloading the
+*same* config path re-reads the snapshot files. No TensorRT engine rebuild is
+ever needed for a prompt change, unlike SAM3Fixed.
 
 ---
 
@@ -213,18 +180,31 @@ ds9_video.py  (video file wrapper)
 
 ```
 sam3-deploy/
-├── run.sh                    # one-shot: config.txt → engine → pipeline
-├── specialize.py             # export SAM3 → ONNX → TRT engine
-├── ds9_rtsp.py               # multi-cam DeepStream RTSP pipeline
-├── ds9_video.py              # restream local video → run ds9_rtsp.py
-├── nvdsparsebbox_sam3.cpp    # DeepStream custom bbox/mask parser
-├── libnvdsinfer_sam3.so      # compiled parser
-├── config_video.txt          # model/pipeline settings for video inference
-├── config.txt                # sources + settings for live cameras
-├── weights/                  # sam3.pt
-├── sam3_{imgsz}_{mode}_{classes}/  # generated: onnx + engine + config_infer.txt
-├── .mediamtx/                # auto-downloaded mediamtx binary
-└── output/                   # annotated mp4 outputs
+├── export.py                    # unified export dispatcher: --prompt <classes> → SAM3Fixed/export.py
+│                                 #   no --prompt → SAM3Open/export.py
+├── bench_stages.py              # per-stage throughput: decode fps, text encoder, vision decoder, baked engine
+├── weight/                      # generated engines from BOTH architectures
+│   ├── sam3_{imgsz}_{mode}_{classes}/     # SAM3Fixed: onnx + engine + config_infer.txt + labels.txt
+│   └── sam3_{imgsz}_open/                 # SAM3Open: text_encoder.engine + vision_decoder.engine
+├── SAM3Fixed/                   # classes baked at export time, runs like YOLO in nvinfer -- self-contained
+│   ├── export.py                # export SAM3 → ONNX → TRT engine (classes baked in)
+│   ├── nvdsparsebbox_sam3.cpp   # custom nvinfer output parsers
+│   ├── libnvdsinfer_sam3.so     # compiled
+│   ├── ds9_rtsp.py              # multi-cam pipeline, per-camera prompts, hot-reload
+│   ├── spec_cache.py            # union-prompt cache: build-or-reuse a weight/ engine for a class union
+│   ├── config.txt               # sources + per-camera classes for live cameras
+│   ├── config_tracker_NvSORT_i5.yml
+│   └── output/                  # annotated mp4 outputs
+├── SAM3Open/                    # open-vocabulary, prompt fed as a runtime text tensor -- self-contained
+│   ├── export.py                # export text-encoder + vision-decoder engines (not baked)
+│   ├── nvdsparsebbox_sam3.cpp   # non-image input injector + output parser
+│   ├── libnvdsinfer_sam3.so     # compiled
+│   ├── ds9_rtsp.py              # multi-cam pipeline, one free-text prompt per camera, hot-reload
+│   ├── sam3open_text.py         # text encoder + non-image-input snapshot writer
+│   ├── config.txt               # sources + per-camera free-text prompts
+│   ├── config_tracker_NvSORT_i5.yml
+│   └── output/
+└── EfficientSAM3_testing/       # EfficientSAM3 (EfficientViT backbone) variant, testing only
 ```
 
 ---

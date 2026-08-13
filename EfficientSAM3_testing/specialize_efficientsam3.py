@@ -1,7 +1,7 @@
 """
 EfficientSAM3 Specialize — ONNX + TRT (bbox-only or instance segmentation)
 --------------------------------------------------------------------------
-Same conventions as specialize.py, but for the EfficientSAM3 EV-M checkpoint
+Same conventions as SAM3Fixed/export.py, but for the EfficientSAM3 EV-M checkpoint
 (EfficientViT-b1 vision encoder + MobileCLIP-S0-variant text encoder, 4-layer
 "mct" architecture -- confirmed by inspecting the checkpoint's actual keys;
 the repo's own README/table says "MobileCLIP-S1" but that maps to a 12-layer
@@ -21,23 +21,28 @@ Source: https://github.com/SimonZeng7108/efficientsam3 (Apache 2.0).
 
 Output dir: efficientsam3_1008_{mode}_{classes}/
 
-imgsz bi KHOA cung o 1008 (khac specialize.py cua SAM3 goc van cho chinh
---imgsz): EfficientSAM3 train o 1008 va tut chat luong ro ret khi ha xuong,
-khong phai tut deu ma VO detection. Do tren bus.jpg (class bus+person):
+imgsz is HARD-LOCKED at 1008 (unlike SAM3Fixed/export.py for the original SAM3,
+which still accepts a custom --imgsz): EfficientSAM3 was trained at 1008 and
+degrades sharply when lowered -- not a gradual drop but MISSED detections
+outright. Measured on bus.jpg (class bus+person):
 
-    1008: bus 0.85 | 4 nguoi, moi nguoi 1 box om sat (0.77 0.76 0.69 0.49)
-    504 : bus 0.79 | nguoi giua BI TACH LAM 2 BOX (0.33 than tren + 0.40
-                     than duoi), nguoi ria trai MAT HAN, score tut ~0.2
+    1008: bus 0.85 | 4 people, each with 1 tight box (0.77 0.76 0.69 0.49)
+    504 : bus 0.79 | the middle person SPLIT INTO 2 BOXES (0.33 upper body +
+                     0.40 lower body), the person at the far left edge is
+                     COMPLETELY MISSED, score drops to ~0.2
 
-Day KHONG phai loi export: da doi chieu ONNX vs PyTorch o ca 2 do phan giai,
-lech chi 0.047px (1008) va 0.016px (504) tren cac box score>0.5 -- ONNX tai
-tao dung y het PyTorch, chinh model o 504 da ra box sai san. Nguyen nhan la
-feature map co con mot nua moi chieu (126 thay vi 252 o tang stride-4) nen
-nguoi o xa/bi che khong con du pixel de decoder gom thanh 1 object.
+This is NOT an export bug: ONNX was cross-checked against PyTorch at both
+resolutions, with only 0.047px (1008) and 0.016px (504) discrepancy on boxes
+scoring >0.5 -- ONNX faithfully reproduces PyTorch; the model itself already
+produces bad boxes at 504. The cause is that the feature map is half the size
+in each dimension (126 instead of 252 at the stride-4 stage), so a distant or
+partially-occluded person no longer has enough pixels for the decoder to
+group into a single object.
 
-(Da loai tru gia thuyet cache pos-emb: PositionEmbeddingSine.cache key theo
-kich thuoc FEATURE MAP, ma pos-emb la ham thuan cua kich thuoc do va duoc
-normalize ve [0,2pi], nen cache hit luon tra dung gia tri cho size do.)
+(Ruled out the pos-emb caching hypothesis: PositionEmbeddingSine caches keyed
+on the FEATURE MAP size, and pos-emb is a pure function of that size,
+normalized to [0,2pi] -- so a cache hit always returns the correct value for
+that size.)
 
 Usage:
     python3 specialize_efficientsam3.py --classes adult child phone --mode det --device cuda
@@ -49,8 +54,10 @@ import time
 import argparse
 import urllib.request
 
-EFFICIENTSAM3_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'efficientsam3')
+SAM3_DEPLOY_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+EFFICIENTSAM3_ROOT = os.path.join(SAM3_DEPLOY_ROOT, '..', 'efficientsam3')
 sys.path.insert(0, EFFICIENTSAM3_ROOT)
+sys.path.insert(0, os.path.join(SAM3_DEPLOY_ROOT, 'SAM3Fixed'))  # for export.py (original SAM3)
 
 import torch
 import torch.nn as nn
@@ -59,7 +66,7 @@ from sam3.model_builder import build_efficientsam3_image_model
 from sam3.model.data_misc import FindStage, interpolate
 from sam3.model import box_ops
 
-from specialize import generate_ds_config
+from export import generate_ds_config
 from build_mixed_precision_engine import build as build_mixed_precision_engine
 
 CHECKPOINT_URL = ('https://huggingface.co/Simon7108528/EfficientSAM3/resolve/main/'
@@ -101,9 +108,10 @@ def build_ev_m(checkpoint_path=CHECKPOINT_PATH, device='cpu'):
 
 
 def normalize_class(cls):
-    """Chi dung de dat ten folder engine (khong duoc co space trong duong dan):
-    'blue bus' va 'blue-bus' deu ve 'blue-bus'. Prompt gui cho model va
-    labels.txt van giu nguyen text nguoi dung go (arg goc, co the co space)."""
+    """Only used for the engine folder name (paths can't contain spaces):
+    'blue bus' and 'blue-bus' both map to 'blue-bus'. The prompt sent to the
+    model and labels.txt keep the original text as typed (raw arg, may
+    contain spaces)."""
     return '-'.join(cls.strip().split())
 
 
@@ -120,7 +128,7 @@ def encode_concepts(model, classes, device):
 class EfficientSam3Wrapper(nn.Module):
     """
     Single-input wrapper. Text features for each class are pre-baked as buffers
-    (ONNX constants once exported), mirroring specialize.py's Sam3Wrapper.
+    (ONNX constants once exported), mirroring SAM3Fixed/export.py's Sam3Wrapper.
 
     with_mask=False (default):
         pixel_values [B,3,H,W]  ->  detections [B, N_cls*Q, 6]
@@ -152,13 +160,14 @@ class EfficientSam3Wrapper(nn.Module):
         backbone_out = self.model.backbone.forward_image(pixel_values)
         geometric_prompt = self.model._get_dummy_prompt(num_prompts=B)
 
-        # img_ids/text_ids phai dai = B, moi "find query" ung voi 1 anh
-        # trong batch (ghep voi 1 ban sao text da .expand(-1,B,-1) o duoi).
-        # Truoc day bi hardcode torch.tensor([0]) (dai 1) trong __init__ nen
-        # _get_img_feats() luon chi lay dung anh dau tien (index 0) trong
-        # backbone_fpn bat ke batch size la bao nhieu -> detections output
-        # bi "dinh" ve batch=1 du pixel_values co batch>1 (cac anh con lai
-        # trong batch bi bo qua hoan toan, khong phai loi export/ONNX).
+        # img_ids/text_ids must have length = B, one "find query" per image in
+        # the batch (paired with a copy of text already .expand(-1,B,-1)'d
+        # below). This used to be hardcoded to torch.tensor([0]) (length 1) in
+        # __init__, so _get_img_feats() always picked only the first image
+        # (index 0) from backbone_fpn regardless of the actual batch size ->
+        # the detections output stayed "pinned" to batch=1 even when
+        # pixel_values had batch>1 (the remaining images in the batch were
+        # silently ignored -- not an export/ONNX bug).
         find_ids = torch.arange(B, device=pixel_values.device, dtype=torch.long)
         find_stage = FindStage(
             img_ids=find_ids, text_ids=find_ids,
@@ -206,7 +215,7 @@ def specialize_and_export(
     min_batch=1, opt_batch=4, max_batch=16,
     skip_trt=False, with_mask=False,
 ):
-    imgsz = IMGSZ  # khoa cung, xem docstring dau file
+    imgsz = IMGSZ  # hard-locked, see the docstring at the top of the file
     t0 = time.perf_counter()
     model = build_ev_m(checkpoint_path, device)
     print(f'[Load] {time.perf_counter() - t0:.1f}s')

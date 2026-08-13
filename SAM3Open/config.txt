@@ -1,0 +1,24 @@
+[sources]
+urls =
+    rtsp://cam0
+    rtsp://cam1
+
+# One free-text prompt per camera (open-vocabulary -- no re-export needed to
+# change these). Up to MAX_SOURCES=4 cameras (sam3open_text.py), matching
+# vision_decoder.engine's max batch. Edit while the pipeline is running to
+# hot-swap prompts, see ds9_open_rtsp.py.
+[cam0]
+prompt = bus
+
+[cam1]
+prompt = car
+
+[model]
+conf = 0.3
+
+[pipeline]
+width = 1280
+height = 720
+infer_interval = 5
+run_seconds = 0
+output_file =

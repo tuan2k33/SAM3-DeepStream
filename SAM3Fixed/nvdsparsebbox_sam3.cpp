@@ -1,7 +1,7 @@
 /**
- * nvdsparsebbox_sam3.cpp
+ * nvdsparsebbox_sam3.cpp  (SAM3Fixed/)
  *
- * Custom DeepStream parsers for SAM3 specialize.py output:
+ * Custom DeepStream output parsers for SAM3Fixed/ (baked-classes) engines:
  *
  *   --mask 0:  detections [N, 6]  float32   x1 y1 x2 y2 score cls_id
  *              → NvDsInferParseSAM3Det
@@ -12,7 +12,7 @@
  *
  * N = num_classes * Q  (Q=200)   cls_id for query i: i / Q
  *
- * Build:
+ * Build (from this directory):
  *   g++ -shared -fPIC -O2 -o libnvdsinfer_sam3.so nvdsparsebbox_sam3.cpp \
  *       -I/opt/nvidia/deepstream/deepstream/sources/includes \
  *       -I/usr/local/cuda-13.0/targets/x86_64-linux/include \
