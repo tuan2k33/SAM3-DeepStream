@@ -1,4 +1,4 @@
-# sam3-deploy
+# SAM3-DeepStream
 
 Real-time open-vocabulary detection and instance segmentation on multi-camera RTSP streams using [SAM3](https://github.com/facebookresearch/sam3) and NVIDIA DeepStream 9.
 
@@ -6,11 +6,10 @@ Real-time open-vocabulary detection and instance segmentation on multi-camera RT
 
 ---
 
-## Requirements
+## Tested on
 
 - NVIDIA GPU 50x series
-- DeepStream 9x + pyservicemaker, CUDA 13x, TensorRT 10x
-- SAM3 checkpoint at HF
+- DeepStream 9.1 + pyservicemaker, CUDA 13.2, TensorRT 10.16
 
 ---
 
@@ -92,9 +91,8 @@ Real-time open-vocabulary detection and instance segmentation on multi-camera RT
 | | [`SAM3Fixed/`](SAM3Fixed/GUIDE.md) | [`SAM3Open/`](SAM3Open/GUIDE.md) |
 |---|---|---|
 | Prompt | Baked into the engine at export time | Free text, supplied at runtime |
-| Classes per camera | Multiple | One |
+| Classes per camera | Multiple | One/Few |
 | Changing the prompt | Re-export (or hot-swap to another already-built engine) | Just edit `config.txt` — no re-export ever |
-| Cost | Scales with number of baked classes | Fixed, independent of prompt |
 
 Setup, `config.txt` reference, and manual export/recompile steps for each are in their own guide: **[SAM3Fixed/GUIDE.md](SAM3Fixed/GUIDE.md)** and **[SAM3Open/GUIDE.md](SAM3Open/GUIDE.md)**.
 
@@ -179,7 +177,7 @@ ever needed for a prompt change, unlike SAM3Fixed.
 ## File structure
 
 ```
-sam3-deploy/
+SAM3-DeepStream/
 ├── export.py                    # unified export dispatcher: --prompt <classes> → SAM3Fixed/export.py
 │                                # no --prompt → SAM3Open/export.py
 ├── bench_stages.py              # per-stage throughput: decode fps, text encoder, vision decoder, baked engine

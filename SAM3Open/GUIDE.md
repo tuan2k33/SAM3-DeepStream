@@ -62,7 +62,7 @@ python3 ../export.py --imgsz 1008
 ```bash
 g++ -shared -fPIC -O2 -o libnvdsinfer_sam3.so nvdsparsebbox_sam3.cpp \
     -I/opt/nvidia/deepstream/deepstream/sources/includes \
-    -I/usr/local/cuda-13.0/targets/x86_64-linux/include -std=c++14
+    -I/usr/local/cuda-13.2/targets/x86_64-linux/include -std=c++14
 ```
 
 ---
