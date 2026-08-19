@@ -65,9 +65,53 @@ import torch.nn as nn
 from sam3.model_builder import build_efficientsam3_image_model
 from sam3.model.data_misc import FindStage, interpolate
 from sam3.model import box_ops
+from sam3.model.decoder import TransformerDecoder
 
 from export import generate_ds_config
 from build_mixed_precision_engine import build as build_mixed_precision_engine
+
+
+# ── Fix for the _get_coords bug (same root cause as SAM3Fixed/export.py) ──
+#
+# TransformerDecoder._get_coords (vendored copy of the same upstream SAM3
+# decoder code, in efficientsam3/sam3/sam3/model/decoder.py) generates a
+# coordinate grid arange(0,H)/H -> range [0,(H-1)/H], NEVER reaching 1.0.
+# Same bug as SAM3Fixed/export.py's _get_coords_denom_fix (see that file for
+# the full writeup). Traced empirically: the decoder's box-refinement
+# cross-attention here runs on a 72x72 feature map at imgsz=1008 (identical
+# to SAM3's own 1008/14=72 grid), so the error is ~1.4% here too, same order
+# of magnitude as SAM3Fixed at 1008 -- not the dominant cause of the
+# missed/split detections documented below at imgsz<1008 (that's the coarser
+# backbone feature map), but a real, free-to-fix parallel bug regardless of
+# imgsz.
+#
+# UNLIKE SAM3Fixed, the grid here is capped below 1.0 rather than a full
+# 1.0. Reason: this checkpoint was never retrained against a corrected
+# grid, so pushing the max all the way to 1.0 is a bigger train/inference
+# distribution shift than the network was calibrated for -- measured on
+# bus.jpg (imgsz 420/700/1008), a full 1.0 cap shifts the predicted box by
+# up to ~10-11px toward the far corner and pushes it past the frame edge
+# (x2 up to 1.0069, needing the clamp below) at BOTH 700 and 1008.
+#
+# cap=0.987654321 (rather than a round 0.99) is carried over from
+# SAM3Fixed/export.py's much more thorough investigation on the original
+# SAM3 -- a 71-point sweep (imgsz 420-1400) against a groundtruth proxy
+# found it beats both a full 1.0 cap and cap=0.99 on 3 of 4 spot-check
+# sizes (see SAM3-DeepStream/SAM3_test/GETCOORDS_INVESTIGATION.md for the
+# full writeup). That investigation was run entirely on SAM3Fixed's
+# Sam3DetrDecoder, not independently re-verified against this vendored
+# EfficientSAM3 decoder -- carried over as the best available estimate
+# since it's the same root-cause bug and the same reasoning applies.
+_COORDS_CAP = 0.987654321
+
+
+def _get_coords_denom_fix(H, W, device):
+    coords_h = torch.arange(0, H, device=device, dtype=torch.float32) / (H - 1) * _COORDS_CAP
+    coords_w = torch.arange(0, W, device=device, dtype=torch.float32) / (W - 1) * _COORDS_CAP
+    return coords_h, coords_w
+
+
+TransformerDecoder._get_coords = staticmethod(_get_coords_denom_fix)
 
 CHECKPOINT_URL = ('https://huggingface.co/Simon7108528/EfficientSAM3/resolve/main/'
                    'efficientsam3_ft/efficientsam3_efficientvit.pt')
@@ -189,7 +233,10 @@ class EfficientSam3Wrapper(nn.Module):
                 geometric_prompt=geometric_prompt,
                 find_target=None,
             )
-            out_bbox = outputs['pred_boxes']
+            # The _get_coords denom fix (module top) can push an
+            # already-near-edge box slightly outside the frame (e.g.
+            # x2=1.01) -- clip back into [0,1] before scaling to pixels.
+            out_bbox = outputs['pred_boxes'].clamp(0.0, 1.0)
             out_logits = outputs['pred_logits']
             presence = outputs['presence_logit_dec'].sigmoid().unsqueeze(1)
             scores = (out_logits.sigmoid() * presence).squeeze(-1)  # [B, Q]

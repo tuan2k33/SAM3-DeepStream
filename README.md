@@ -202,7 +202,7 @@ SAM3-DeepStream/
 │   ├── config.txt               # sources + per-camera free-text prompts
 │   ├── config_tracker_NvSORT_i5.yml
 │   └── output/
-└── EfficientSAM3_testing/       # EfficientSAM3 (EfficientViT backbone) variant, testing only
+└── ESAM3_test/                   # EfficientSAM3 (EfficientViT backbone) variant, testing only
 ```
 
 ---
@@ -216,3 +216,5 @@ This is a personal project. It is not affiliated with, endorsed by, or connected
 ## License
 
 Derivative work of SAM3 by Meta. Distributed under the [SAM License](LICENSE).
+
+`ESAM3_test/` is a derivative of [EfficientSAM3](https://github.com/SimonZeng7108/efficientsam3) (Apache 2.0), by Simon Zeng.

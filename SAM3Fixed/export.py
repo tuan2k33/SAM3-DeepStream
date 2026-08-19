@@ -45,74 +45,31 @@ from transformers.models.sam3.modeling_sam3 import Sam3DetrDecoder, Sam3ViTRotar
 # fraction proportional to 1/Hp -- more pronounced the smaller imgsz gets.
 #
 # Fix: divide by (height-1)/(width-1) instead of height/width, so the grid
-# actually reaches 1.0. Verified experimentally (probe_get_coords.py) across
-# bus/person/cat/remote at imgsz 1008/504/280: total box-coordinate error is
-# consistently lower than the previous additive-offset patch, on every test
-# except that it is NOT a no-op at 1008 the way the offset patch was (a
-# small ~0.5-1% shift appears even at native resolution) -- an accepted
-# tradeoff. Because this can push already-near-edge boxes slightly past the
-# frame (e.g. x2=1.01), _clamp_boxes() below clips the final output back
-# into [0,1] -- see Sam3Wrapper.forward().
+# would reach 1.0 -- capped below 1.0 instead (see below), not a full 1.0.
+#
+# Why capped and not a full 1.0: the checkpoint was never retrained against
+# a corrected grid, so pushing the max all the way to 1.0 is a bigger
+# train/inference distribution shift than the network was calibrated for --
+# a full 1.0 cap measured worst on every imgsz tested (verified against a
+# groundtruth proxy across a 71-point sweep, imgsz 420-1400 step 14; see
+# SAM3-DeepStream/SAM3_test/GETCOORDS_INVESTIGATION.md for the full
+# writeup, sweep data, and everything else that was tried and rejected:
+# cap=0.98, patch-center convention, /(H-0.9), post-hoc pixel shifts).
+# cap=0.987654321 measured the best mean box-coordinate error against that
+# proxy, beating both a full 1.0 cap and cap=0.99 on 3 of 4 spot-check
+# sizes. _clamp_boxes() below (Sam3Wrapper.forward()) is kept as a final
+# safety net regardless, since even this cap can push an already-near-edge
+# box slightly past the frame.
+_COORDS_CAP = 0.987654321
+
+
 def _get_coords_denom_fix(self, height, width, dtype, device):
-    coords_h = torch.arange(0, height, device=device, dtype=dtype) / (height - 1)
-    coords_w = torch.arange(0, width, device=device, dtype=dtype) / (width - 1)
+    coords_h = torch.arange(0, height, device=device, dtype=dtype) / (height - 1) * _COORDS_CAP
+    coords_w = torch.arange(0, width, device=device, dtype=dtype) / (width - 1) * _COORDS_CAP
     return coords_h, coords_w
 
 
 Sam3DetrDecoder._get_coords = _get_coords_denom_fix
-
-
-# Earlier version of the fix (2026-08-12 -> 2026-08-13), kept commented out
-# for reference -- NOT active. Used an empirically-calibrated additive offset
-# (0 at 1008 -> 0.3 at 280) instead of touching the denominator, paired with
-# a box-dilation post-process in Sam3Wrapper.forward() (0% at 1008 -> 6% at
-# 280) to compensate for the residual undershoot the offset alone didn't
-# cover. Replaced because probe_get_coords.py A/B/C comparisons (bus/person/
-# cat/remote, imgsz 1008/504/280) showed _get_coords_denom_fix above has
-# consistently lower total box-coordinate error. Both pieces only worked
-# together as a pair -- box_pad_pct was calibrated specifically for this
-# offset formula's residual error and overcorrects if combined with the
-# denom fix instead (verified: pushes already-near-edge boxes further past
-# the frame than the denom fix alone).
-#
-# _OFFSET_PATCH_SIZE = 14
-# _OFFSET_IMGSZ_HI, _OFFSET_IMGSZ_LO = 1008, 280
-# _OFFSET_HI, _OFFSET_LO = 0.0, 0.3
-#
-# def _offset_for_height(height):
-#     imgsz = float(height) * _OFFSET_PATCH_SIZE
-#     t = (_OFFSET_IMGSZ_HI - imgsz) / (_OFFSET_IMGSZ_HI - _OFFSET_IMGSZ_LO)
-#     t = max(0.0, min(1.0, t))
-#     return _OFFSET_HI + t * (_OFFSET_LO - _OFFSET_HI)
-#
-# def _get_coords_dynamic_offset(self, height, width, dtype, device):
-#     off_h = _offset_for_height(height)
-#     off_w = _offset_for_height(width)
-#     coords_h = (torch.arange(0, height, device=device, dtype=dtype) + off_h) / height
-#     coords_w = (torch.arange(0, width, device=device, dtype=dtype) + off_w) / width
-#     return coords_h, coords_w
-#
-# # Sam3DetrDecoder._get_coords = _get_coords_dynamic_offset
-#
-# _BOXPAD_IMGSZ_HI, _BOXPAD_IMGSZ_LO = 1008, 280
-# _BOXPAD_HI, _BOXPAD_LO = 0.0, 0.06
-#
-# def _box_pad_pct(imgsz):
-#     t = (_BOXPAD_IMGSZ_HI - imgsz) / (_BOXPAD_IMGSZ_HI - _BOXPAD_IMGSZ_LO)
-#     t = max(0.0, min(1.0, t))
-#     return _BOXPAD_HI + t * (_BOXPAD_LO - _BOXPAD_HI)
-#
-# # in Sam3Wrapper.__init__:
-# #     self.box_pad_pct = _box_pad_pct(imgsz)  # 0.0 at 1008 -> 0.06 at 280
-# # in Sam3Wrapper.forward(), before boxes_px = pred_boxes * self.scale:
-# #     if self.box_pad_pct > 0:
-# #         x1, y1, x2, y2 = pred_boxes.unbind(-1)
-# #         bw, bh = x2 - x1, y2 - y1
-# #         x1 = x1 - bw * (self.box_pad_pct / 2)
-# #         x2 = x2 + bw * (self.box_pad_pct / 2)
-# #         y1 = y1 - bh * (self.box_pad_pct / 2)
-# #         y2 = y2 + bh * (self.box_pad_pct / 2)
-# #         pred_boxes = torch.stack([x1, y1, x2, y2], dim=-1)
 
 
 # ── Sinusoidal pos enc ────────────────────────────────────────────────────────

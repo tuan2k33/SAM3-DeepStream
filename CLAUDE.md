@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Real-time open-vocabulary detection and instance segmentation on multi-camera RTSP streams using [SAM3](https://github.com/facebookresearch/sam3) and NVIDIA DeepStream 9. Two independent, self-contained architectures for getting a prompt into SAM3 live side by side as top-level folders — `SAM3Fixed/` (classes baked at export time) and `SAM3Open/` (open-vocabulary, prompt supplied at runtime). Each folder holds everything for that architecture: the export script, the custom `nvinfer` plugin, and the DeepStream pipeline script(s) + configs. Generated engines from both go into a shared `weight/` folder at the repo root.
 
-A third top-level folder, `EfficientSAM3_testing/`, is an experimental, export-only variant using [EfficientSAM3](https://github.com/SimonZeng7108/efficientsam3)'s EfficientViT backbone instead of SAM3's ViT — offline export/inference testing only, no DeepStream pipeline script of its own (see below).
+A third top-level folder, `ESAM3_test/`, is an experimental, export-only variant using [EfficientSAM3](https://github.com/SimonZeng7108/efficientsam3)'s EfficientViT backbone instead of SAM3's ViT — offline export/inference testing only, no DeepStream pipeline script of its own (see below).
 
 ## Setup
 
@@ -16,7 +16,7 @@ pip install torch torchvision numpy opencv-python pillow transformers einops ftf
 ```
 `Sam3Model`/`Sam3Processor` ship inside `transformers` itself — no separate `facebookresearch/sam3` install needed.
 
-Also requires (not pip-installable): DeepStream 9 (`pyservicemaker`), TensorRT 10.x (`trtexec`, `libnvinfer`), CUDA 13.0, `ffmpeg`. All `gpu-id` properties in DeepStream configs must stay `0`; select the physical GPU via `CUDA_VISIBLE_DEVICES=N` instead.
+Also requires (not pip-installable): DeepStream 9 (`pyservicemaker`), TensorRT 10.x (`trtexec`, `libnvinfer`), CUDA 13.2, `ffmpeg`. All `gpu-id` properties in DeepStream configs must stay `0`; select the physical GPU via `CUDA_VISIBLE_DEVICES=N` instead.
 
 ## Common commands
 
@@ -56,7 +56,7 @@ python3 bench_stages.py --imgsz 420 --batch 1 2 4
 
 Export + test-infer an EfficientSAM3 engine (offline testing only, no live pipeline):
 ```bash
-cd EfficientSAM3_testing
+cd ESAM3_test
 python3 specialize_efficientsam3.py --classes truck --mode det --device cuda   # -> efficientsam3_1008_det_truck/
 python3 infer_engine_efficientsam3.py efficientsam3_1008_det_truck bus.jpg --conf 0.2
 ```
@@ -104,7 +104,7 @@ row *b* = camera *b*'s current prompt encoding (from `text_encoder.engine`, run 
 
 An earlier version of this fix used an empirically-calibrated additive offset (0 at 1008 → 0.3 at 280) plus a box-dilation post-process instead of touching the denominator; the `/(height-1)` form was adopted after `probe_get_coords.py`-style A/B/C comparisons (bus/person/cat/remote, imgsz 1008/504/280) showed it has consistently lower total box-coordinate error. Trade-off: unlike the offset patch, it is not an exact no-op at 1008 (~0.5-1% shift can appear even at native resolution), and it can push an already-near-edge box slightly past the frame (e.g. `x2=1.01`) — `Sam3Wrapper.forward()` clamps the final box to `[0,1]` to handle this.
 
-### EfficientSAM3_testing/ (experimental, export-only)
+### ESAM3_test/ (experimental, export-only)
 
 `specialize_efficientsam3.py` follows the same conventions as `SAM3Fixed/export.py` (baked classes, `--mode det/seg`, output dir `efficientsam3_{imgsz}_{mode}_{classes}/`) but traces the EfficientSAM3 checkpoint (EfficientViT-b1 vision encoder + a 4-layer MobileCLIP-S0-variant text encoder — confirmed by inspecting the checkpoint's actual keys; upstream's own README/table says "MobileCLIP-S1", which is wrong, that maps to a 12-layer variant that doesn't match). `imgsz` is hard-locked at 1008 (unlike `SAM3Fixed/export.py`): lowering it doesn't degrade gradually, it causes outright missed/split detections, because EfficientViT's feature map is coarser than SAM3's ViT at the same input size — confirmed not an export bug by cross-checking ONNX against PyTorch at both resolutions (sub-pixel discrepancy).
 
